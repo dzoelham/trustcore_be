@@ -1,0 +1,7 @@
+-- 0001_init.down.sql
+DROP TABLE IF EXISTS audit_logs;
+DROP TABLE IF EXISTS verifications;
+DROP TABLE IF EXISTS vectors;
+DROP TABLE IF EXISTS user_roles;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS roles;
