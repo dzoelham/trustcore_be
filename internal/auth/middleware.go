@@ -3,10 +3,13 @@ package auth
 import (
 	"net/http"
 	"strings"
+	"time"
+	"trustcore/internal/models"
+
+	"gorm.io/gorm"
 )
 
-// JWTAuth validates Authorization: Bearer <token> and populates context claims.
-func JWTAuth() func(http.Handler) http.Handler {
+func JWTAuth(db *gorm.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := r.Header.Get("Authorization")
@@ -20,12 +23,20 @@ func JWTAuth() func(http.Handler) http.Handler {
 				http.Error(w, "invalid token", http.StatusUnauthorized)
 				return
 			}
+			var sess models.Session
+			if claims.JWTID == "" || db.First(&sess, "jti = ?", claims.JWTID).Error != nil {
+				http.Error(w, "session not found", http.StatusUnauthorized)
+				return
+			}
+			if sess.RevokedAt != nil || time.Now().After(sess.ExpiresAt) {
+				http.Error(w, "session expired/revoked", http.StatusUnauthorized)
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(WithClaims(r.Context(), claims)))
 		})
 	}
 }
 
-// RequireRole ensures the current user has the specified role.
 func RequireRole(role string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

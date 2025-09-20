@@ -6,7 +6,6 @@ type Role struct {
 	ID   int    `gorm:"primaryKey;autoIncrement" json:"id"`
 	Name string `gorm:"uniqueIndex;not null" json:"name"`
 }
-
 type User struct {
 	ID           string    `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
 	Email        string    `gorm:"uniqueIndex;not null" json:"email"`
@@ -16,34 +15,36 @@ type User struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
-
+type Client struct {
+	ID          string    `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	CompanyName string    `gorm:"not null" json:"company_name"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
 type Vector struct {
-	ID           string    `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
-	UserID       string    `gorm:"type:uuid;not null;index" json:"user_id"`
-	Algorithm    string    `gorm:"not null" json:"algorithm"`
-	Params       JSONB     `gorm:"type:jsonb;default:'{}'::jsonb" json:"params"`
-	InputHex     *string   `json:"input_hex,omitempty"`
-	InputPath    *string   `json:"input_path,omitempty"`
-	ExpectedHex  string    `gorm:"not null" json:"expected_hex"`
-	Status       string    `gorm:"not null;default:ready" json:"status"`
-	CreatedAt    time.Time `json:"created_at"`
-}
-
-type Verification struct {
-	ID             string    `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
-	UserID         string    `gorm:"type:uuid;not null;index" json:"user_id"`
-	VectorID       *string   `gorm:"type:uuid" json:"vector_id,omitempty"`
-	UploadedHex    *string   `json:"uploaded_hex,omitempty"`
-	UploadedPath   *string   `json:"uploaded_path,omitempty"`
-	IsMatch        *bool     `json:"is_match,omitempty"`
-	MismatchReason *string   `json:"mismatch_reason,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-}
-
-type AuditLog struct {
-	ID        int64   `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID    *string `gorm:"type:uuid" json:"user_id,omitempty"`
-	Action    string  `gorm:"not null" json:"action"`
-	Metadata  JSONB   `gorm:"type:jsonb;default:'{}'::jsonb" json:"metadata"`
+	ID        string    `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	ClientID  string    `gorm:"type:uuid;not null;index" json:"client_id"`
+	UserID    string    `gorm:"type:uuid;not null;index" json:"user_id"`
+	Algorithm string    `gorm:"not null" json:"algorithm"`
+	Method    string    `gorm:"not null" json:"method"`
+	Params    JSONB     `gorm:"type:jsonb;default:'{}'::jsonb" json:"params"`
+	InputHex  *string   `json:"input_hex,omitempty"`
+	OutputHex *string   `json:"output_hex,omitempty"`
+	Status    string    `gorm:"not null;default:ready" json:"status"`
 	CreatedAt time.Time `json:"created_at"`
+}
+type AuditLog struct {
+	ID        int64     `gorm:"primaryKey;autoIncrement" json:"id"`
+	UserID    *string   `gorm:"type:uuid" json:"user_id,omitempty"`
+	ClientID  *string   `gorm:"type:uuid" json:"client_id,omitempty"`
+	Action    string    `gorm:"not null" json:"action"`
+	Metadata  JSONB     `gorm:"type:jsonb;default:'{}'::jsonb" json:"metadata"`
+	CreatedAt time.Time `json:"created_at"`
+}
+type Session struct {
+	JTI       string     `gorm:"primaryKey;size:64" json:"jti"`
+	UserID    string     `gorm:"type:uuid;index;not null" json:"user_id"`
+	ExpiresAt time.Time  `gorm:"not null" json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }

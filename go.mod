@@ -1,4 +1,4 @@
-module testvec-backend
+module trustcore
 
 go 1.25
 

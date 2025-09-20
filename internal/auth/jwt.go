@@ -8,25 +8,13 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-func parseTTL() time.Duration {
-	if s := os.Getenv("JWT_EXPIRES_IN"); s != "" {
-		if d, err := time.ParseDuration(s); err == nil {
-			return d
-		}
-	}
-	return 24 * time.Hour
-}
+func parseTTL() time.Duration { return 24 * time.Hour }
 
-func Sign(userID string, roles []string) (string, error) {
+func Sign(userID string, roles []string, jti string) (string, error) {
 	key := []byte(os.Getenv("JWT_SECRET"))
-	claims := jwt.MapClaims{
-		"sub":   userID,
-		"roles": roles,
-		"exp":   time.Now().Add(parseTTL()).Unix(),
-		"iat":   time.Now().Unix(),
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(key)
+	claims := jwt.MapClaims{"sub": userID, "roles": roles, "exp": time.Now().Add(24 * time.Hour).Unix(), "iat": time.Now().Unix(), "jti": jti}
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return tok.SignedString(key)
 }
 
 func Verify(tokenStr string) (Claims, error) {
@@ -53,5 +41,6 @@ func Verify(tokenStr string) (Claims, error) {
 			}
 		}
 	}
-	return Claims{Subject: sub, Roles: roles}, nil
+	jti, _ := mapc["jti"].(string)
+	return Claims{Subject: sub, Roles: roles, JWTID: jti}, nil
 }

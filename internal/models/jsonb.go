@@ -6,7 +6,6 @@ import (
 	"fmt"
 )
 
-// JSONB is a thin helper for storing arbitrary JSON with GORM.
 type JSONB []byte
 
 func (j JSONB) Value() (driver.Value, error) {
@@ -15,7 +14,6 @@ func (j JSONB) Value() (driver.Value, error) {
 	}
 	return []byte(j), nil
 }
-
 func (j *JSONB) Scan(value interface{}) error {
 	if value == nil {
 		*j = JSONB("{}")
@@ -23,12 +21,17 @@ func (j *JSONB) Scan(value interface{}) error {
 	}
 	switch v := value.(type) {
 	case []byte:
-		*j = JSONB(v); return nil
+		*j = JSONB(v)
+		return nil
 	case string:
-		*j = JSONB([]byte(v)); return nil
+		*j = JSONB([]byte(v))
+		return nil
 	default:
 		b, err := json.Marshal(v)
-		if err != nil { return fmt.Errorf("jsonb scan: %w", err) }
-		*j = JSONB(b); return nil
+		if err != nil {
+			return fmt.Errorf("jsonb scan: %w", err)
+		}
+		*j = JSONB(b)
+		return nil
 	}
 }
