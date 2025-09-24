@@ -16,10 +16,12 @@ type User struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 type Client struct {
-	ID          string    `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
-	CompanyName string    `gorm:"not null" json:"company_name"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             string    `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
+	CompanyName    string    `gorm:"not null" json:"company_name"`
+	ProductName    string    `gorm:"not null;default:UNKNOWN;size:30" json:"product_name"`
+	ProductVersion string    `gorm:"not null;default:0.0;size:5"  json:"product_version"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 type Vector struct {
 	ID        string    `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
