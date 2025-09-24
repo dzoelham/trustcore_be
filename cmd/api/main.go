@@ -1,14 +1,13 @@
 package main
 
 import (
-	"context"
-	"embed"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 	"trustcore/internal/auth"
+	"trustcore/internal/db/migrate"
 	"trustcore/internal/httpserver"
 	"trustcore/internal/logger"
 	"trustcore/internal/models"
@@ -18,6 +17,16 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
+
+func runCryptoSeed(db *gorm.DB) error {
+	sqlBytes, err := migrate.SeedFS.ReadFile("0005_seed_cryptography.up.sql")
+	if err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		return tx.Exec(string(sqlBytes)).Error
+	})
+}
 
 func main() {
 	_ = godotenv.Load()
@@ -35,7 +44,10 @@ func main() {
 		lg.Fatalw("automigrate failed", "error", err)
 	}
 	seedDefaultAdmin(db, lg)
-	runCryptoSeed(db)
+	if err := runCryptoSeed(db); err != nil {
+		lg.Fatalw("cryptography seed failed", "error", err)
+	}
+
 	router := httpserver.NewRouter(db, lg)
 	port := os.Getenv("HTTP_PORT")
 	if port == "" {
@@ -64,24 +76,4 @@ func seedDefaultAdmin(db *gorm.DB, lg *zap.SugaredLogger) {
 		}
 	}
 	lg.Infow("seeded default admin", "email", "admin@trustcore.local")
-}
-
-var seedFS embed.FS
-
-func runCryptoSeed(db *gorm.DB) error {
-	sqlBytes, err := seedFS.ReadFile("internal/db/migrate/0005_seed_cryptography.up.sql")
-	if err != nil {
-		return err
-	}
-
-	return db.WithContext(context.Background()).Transaction(func(tx *gorm.DB) error {
-		// optional: ensure pgcrypto for gen_random_uuid() if you also run 0004 via SQL
-		// if err := tx.Exec(`CREATE EXTENSION IF NOT EXISTS pgcrypto`).Error; err != nil { return err }
-
-		// Execute the whole seed file (multiple INSERT ... ON CONFLICT statements)
-		if err := tx.Exec(string(sqlBytes)).Error; err != nil {
-			return err
-		}
-		return nil
-	})
 }
