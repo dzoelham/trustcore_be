@@ -1,0 +1,4 @@
+ALTER TABLE vectors
+  DROP COLUMN IF EXISTS method,
+  DROP COLUMN IF EXISTS params,
+  DROP COLUMN IF EXISTS status;

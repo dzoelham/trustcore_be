@@ -23,18 +23,6 @@ type Client struct {
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
-type Vector struct {
-	ID        string    `gorm:"type:uuid;default:gen_random_uuid();primaryKey" json:"id"`
-	ClientID  string    `gorm:"type:uuid;not null;index" json:"client_id"`
-	UserID    string    `gorm:"type:uuid;not null;index" json:"user_id"`
-	Algorithm string    `gorm:"not null" json:"algorithm"`
-	Method    string    `gorm:"not null" json:"method"`
-	Params    JSONB     `gorm:"type:jsonb;default:'{}'::jsonb" json:"params"`
-	InputHex  *string   `json:"input_hex,omitempty"`
-	OutputHex *string   `json:"output_hex,omitempty"`
-	Status    string    `gorm:"not null;default:ready" json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-}
 type AuditLog struct {
 	ID        int64     `gorm:"primaryKey;autoIncrement" json:"id"`
 	UserID    *string   `gorm:"type:uuid" json:"user_id,omitempty"`
