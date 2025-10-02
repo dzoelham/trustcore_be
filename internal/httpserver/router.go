@@ -31,7 +31,7 @@ func NewRouter(db *gorm.DB, lg *zap.SugaredLogger) http.Handler {
 		protected.Get("/v1/clients", handlers.ListClients(db, lg))
 		protected.Patch("/v1/clients/{id}", handlers.UpdateClient(db, lg))
 		protected.Delete("/v1/clients/{id}", handlers.DeleteClient(db, lg))
-		protected.Post("/v1/clients/{client_id}/vectors/generate", handlers.GenerateVector(db, lg))
+		// protected.Post("/v1/clients/{client_id}/vectors/generate", handlers.GenerateVector(db, lg))
 		protected.Post("/v1/clients/{client_id}/vectors/validate/aes-cbc", handlers.ValidateAESCBC(db, lg))
 		protected.Get("/v1/cryptography", handlers.ListCryptography(db, lg))
 		protected.Post("/v1/cryptography/vectors", handlers.GenerateVectorsByParams(db, lg))

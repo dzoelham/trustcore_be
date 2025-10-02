@@ -3,8 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 	"trustcore/internal/models"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
@@ -13,18 +15,59 @@ import (
 
 func CreateClient(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			CompanyName string `json:"company_name"`
+		type createClientReq struct {
+			CompanyName    string  `json:"company_name"`
+			ProductName    *string `json:"product_name,omitempty"`
+			ProductVersion *string `json:"product_version,omitempty"`
 		}
+
+		var req createClientReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if req.CompanyName == "" {
+
+		company := strings.TrimSpace(req.CompanyName)
+		if company == "" {
 			http.Error(w, "company_name required", http.StatusBadRequest)
 			return
 		}
-		c := models.Client{CompanyName: req.CompanyName, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+
+		// Defaults per model tags when omitted or blank
+		pname := "UNKNOWN"
+		if req.ProductName != nil {
+			pname = strings.TrimSpace(*req.ProductName)
+			if pname == "" {
+				pname = "UNKNOWN"
+			}
+		}
+
+		pver := "0.0"
+		if req.ProductVersion != nil {
+			pver = strings.TrimSpace(*req.ProductVersion)
+			if pver == "" {
+				pver = "0.0"
+			}
+		}
+
+		// Enforce length constraints (same as size:30 and size:5)
+		if utf8.RuneCountInString(pname) > 30 {
+			http.Error(w, "product_name must be <= 30 characters", http.StatusBadRequest)
+			return
+		}
+		if utf8.RuneCountInString(pver) > 5 {
+			http.Error(w, "product_version must be <= 5 characters", http.StatusBadRequest)
+			return
+		}
+
+		c := models.Client{
+			CompanyName:    company,
+			ProductName:    pname,
+			ProductVersion: pver,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+		}
+
 		if err := db.Create(&c).Error; err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
