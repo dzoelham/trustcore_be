@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"trustcore/internal/models"
@@ -15,6 +16,25 @@ import (
 )
 
 func sp(s string) *string { return &s }
+
+func containsFold(ss []string, v string) bool {
+	v = strings.ToUpper(strings.TrimSpace(v))
+	for _, s := range ss {
+		if strings.ToUpper(strings.TrimSpace(s)) == v {
+			return true
+		}
+	}
+	return false
+}
+
+func containsInt(list []int, x int) bool {
+	for _, v := range list {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
 
 // POST /v1/cryptography/vectors
 func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFunc {
@@ -36,6 +56,7 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 			return
 		}
 
+		// UUID validations
 		if err := uuid.Validate(req.UserID); err != nil {
 			http.Error(w, "user_id must be a valid UUID", http.StatusBadRequest)
 			return
@@ -49,16 +70,15 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 		mode := strings.ToUpper(strings.TrimSpace(req.Mode))
 		tmode := strings.ToUpper(strings.TrimSpace(req.TestMode))
 
-		if alg == "" || mode == "" || tmode == "" {
-			http.Error(w, "algorithm, mode, test_mode are required", http.StatusBadRequest)
+		if alg == "" || tmode == "" {
+			http.Error(w, "algorithm and test_mode are required", http.StatusBadRequest)
 			return
 		}
 
+		// Client & User existence
 		var exists bool
 		if err := db.Model(&models.Client{}).
-			Select("count(*) > 0").
-			Where("id = ?", req.ClientID).
-			Find(&exists).Error; err != nil {
+			Select("count(*) > 0").Where("id = ?", req.ClientID).Find(&exists).Error; err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -68,9 +88,7 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 		}
 
 		if err := db.Model(&models.User{}).
-			Select("count(*) > 0").
-			Where("id = ?", req.UserID).
-			Find(&exists).Error; err != nil {
+			Select("count(*) > 0").Where("id = ?", req.UserID).Find(&exists).Error; err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -79,9 +97,94 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 			return
 		}
 
-		if alg == "AES" && mode == "CBC" {
-			tm := vector.AESCBCTestMode(tmode)
-			vec, err := vector.GenerateAESCBCTestVectors(tm, vector.AESCBGParams{
+		// Lookup cryptography catalogue and validate combination
+		var cat models.Cryptography
+		if err := db.Where("upper(algorithm) = ?", alg).First(&cat).Error; err != nil {
+			http.Error(w, "algorithm not found in catalogue", http.StatusBadRequest)
+			return
+		}
+
+		// Unmarshal JSONB fields (works whether JSONB is a struct, map, or raw bytes)
+		// --- after you loaded `cat` (models.Cryptography) ---
+		var modes []string
+		var testModes []string
+		var keyLens []int
+
+		if b, err := json.Marshal(cat.Modes); err == nil {
+			_ = json.Unmarshal(b, &modes)
+		}
+		if b, err := json.Marshal(cat.TestModes); err == nil {
+			_ = json.Unmarshal(b, &testModes)
+		}
+		if b, err := json.Marshal(cat.KeyLengths); err == nil {
+			_ = json.Unmarshal(b, &keyLens)
+		}
+
+		// Helper: known AES modes (fallback if catalogue is missing/empty)
+		aesModes := []string{"ECB", "CBC", "CFB", "OFB", "CTR", "GCM"}
+		tdeaModes := []string{"ECB", "CBC", "CFB", "OFB", "CTR"}
+
+		// Decide how to validate `mode`
+		category := strings.ToUpper(strings.TrimSpace(cat.Category))
+		switch category {
+		case "HASH", "MESSAGE AUTHENTICATION", "RANDOM NUMBER GENERATOR", "ASYMMETRIC TECHNIQUE", "KEY MANAGEMENT", "POST QUANTUM CRYPTOGRAPHY":
+			// Mode-less families
+			if strings.TrimSpace(mode) != "" {
+				http.Error(w, fmt.Sprintf("%s does not use modes; omit 'mode'", cat.Algorithm), http.StatusBadRequest)
+				return
+			}
+		default:
+			// Things that may use modes (block ciphers; some stream ciphers)
+			if len(modes) > 0 {
+				if !containsFold(modes, mode) {
+					sort.Strings(modes)
+					http.Error(w, fmt.Sprintf("invalid mode for %s. allowed: %v", cat.Algorithm, modes), http.StatusBadRequest)
+					return
+				}
+			} else {
+				// Catalogue has empty/NULL modes; apply sensible fallback for AES
+				if strings.EqualFold(alg, "AES") {
+					if !containsFold(aesModes, mode) {
+						http.Error(w, fmt.Sprintf("invalid mode for AES. allowed: %v", aesModes), http.StatusBadRequest)
+						return
+					}
+				} else if strings.EqualFold(alg, "TDEA") || strings.EqualFold(alg, "3DES") {
+					if !containsFold(tdeaModes, mode) {
+						http.Error(w, fmt.Sprintf("invalid mode for TDEA. allowed: %v", tdeaModes), http.StatusBadRequest)
+						return
+					}
+				} else if strings.TrimSpace(mode) != "" && strings.EqualFold(category, "STREAM CIPHER") {
+					// Stream ciphers typically have no modes -> require omit
+					http.Error(w, fmt.Sprintf("%s is a stream cipher and does not use modes; omit 'mode'", cat.Algorithm), http.StatusBadRequest)
+					return
+				}
+				// else: accept as-is (no strict mode validation available)
+			}
+		}
+
+		// Validate test_mode and key_bits if catalogue provides them
+		if len(testModes) > 0 && !containsFold(testModes, tmode) {
+			http.Error(w, fmt.Sprintf("invalid test_mode for %s. allowed: %v", cat.Algorithm, testModes), http.StatusBadRequest)
+			return
+		}
+		// key_bits validation fallback if table empty
+		if len(keyLens) == 0 {
+			if strings.EqualFold(alg, "AES") {
+				keyLens = []int{128, 192, 256}
+			}
+			if strings.EqualFold(alg, "TDEA") || strings.EqualFold(alg, "3DES") {
+				keyLens = []int{112, 168}
+			}
+		}
+		if len(keyLens) > 0 && !containsInt(keyLens, req.KeyBits) {
+			http.Error(w, fmt.Sprintf("invalid key_bits for %s. allowed: %v", cat.Algorithm, keyLens), http.StatusBadRequest)
+			return
+		}
+
+		// Dispatch
+		switch alg {
+		case "AES":
+			vec, err := vector.GenerateAESTestVectors(mode, tmode, vector.AESGenParams{
 				KeyBits:         req.KeyBits,
 				Count:           req.Count,
 				IncludeExpected: req.IncludeExpected,
@@ -91,6 +194,7 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 				return
 			}
 
+			// Persist to `vectors`
 			if err := db.Transaction(func(tx *gorm.DB) error {
 				for _, e := range vec.Encrypt {
 					in := strings.ToLower(e.Plaintext)
@@ -135,16 +239,152 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 			}
 
 			if strings.ToLower(req.Format) == "txt" {
-				txt := vec.ToTXT()
+				var b strings.Builder
+
+				// ENCRYPT section
+				b.WriteString("[ENCRYPT]\n\n")
+				for _, r := range vec.Encrypt {
+					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
+					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
+					if strings.TrimSpace(r.IVHex) != "" {
+						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
+					}
+					b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
+					// Include expected CIPHERTEXT if requested and present
+					if req.IncludeExpected && strings.TrimSpace(r.Ciphertext) != "" {
+						b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
+					}
+					b.WriteString("\n")
+				}
+
+				// DECRYPT section
+				b.WriteString("[DECRYPT]\n\n")
+				for _, r := range vec.Decrypt {
+					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
+					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
+					if strings.TrimSpace(r.IVHex) != "" {
+						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
+					}
+					b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
+					// Include expected PLAINTEXT if requested and present
+					if req.IncludeExpected && strings.TrimSpace(r.Plaintext) != "" {
+						b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
+					}
+					b.WriteString("\n")
+				}
+
+				txt := b.String()
 				w.Header().Set("Content-Type", "text/plain")
-				w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=aes_cbc_%s_%d.txt", tmode, req.KeyBits))
+				w.Header().Set("Content-Disposition", fmt.Sprintf(
+					"attachment; filename=aes_%s_%s_%d.txt",
+					strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits,
+				))
 				_, _ = w.Write([]byte(txt))
 				return
 			}
+
 			respondJSON(w, vec)
 			return
-		}
 
-		http.Error(w, "algorithm/mode not implemented yet", http.StatusNotImplemented)
+		case "TDEA", "3DES":
+			vec, err := vector.GenerateTDEATestVectors(mode, tmode, vector.TDEAGenParams{
+				KeyBits: req.KeyBits, Count: req.Count, IncludeExpected: req.IncludeExpected,
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			// Persist to `vectors`
+			if err := db.Transaction(func(tx *gorm.DB) error {
+				for _, e := range vec.Encrypt {
+					in := strings.ToLower(e.Plaintext)
+					out := strings.ToLower(e.Ciphertext)
+					row := models.Vector{
+						UserID:    req.UserID,
+						ClientID:  req.ClientID,
+						Algorithm: vec.Algorithm,
+						Mode:      vec.Mode,
+						TestMode:  vec.TestMode,
+						Direction: "ENCRYPT",
+						InputHex:  sp(in),
+						OutputHex: sp(out),
+						Status:    "ready",
+					}
+					if err := tx.Create(&row).Error; err != nil {
+						return err
+					}
+				}
+				for _, d := range vec.Decrypt {
+					in := strings.ToLower(d.Ciphertext)
+					out := strings.ToLower(d.Plaintext)
+					row := models.Vector{
+						UserID:    req.UserID,
+						ClientID:  req.ClientID,
+						Algorithm: vec.Algorithm,
+						Mode:      vec.Mode,
+						TestMode:  vec.TestMode,
+						Direction: "DECRYPT",
+						InputHex:  sp(in),
+						OutputHex: sp(out),
+						Status:    "ready",
+					}
+					if err := tx.Create(&row).Error; err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			if strings.ToLower(req.Format) == "txt" {
+				var b strings.Builder
+				// ENCRYPT
+				b.WriteString("[ENCRYPT]\n\n")
+				for _, r := range vec.Encrypt {
+					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
+					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
+					if strings.TrimSpace(r.IVHex) != "" {
+						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
+					}
+					b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
+					if req.IncludeExpected && strings.TrimSpace(r.Ciphertext) != "" {
+						b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
+					}
+					b.WriteString("\n")
+				}
+				// DECRYPT
+				b.WriteString("[DECRYPT]\n\n")
+				for _, r := range vec.Decrypt {
+					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
+					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
+					if strings.TrimSpace(r.IVHex) != "" {
+						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
+					}
+					b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
+					if req.IncludeExpected && strings.TrimSpace(r.Plaintext) != "" {
+						b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
+					}
+					b.WriteString("\n")
+				}
+				txt := b.String()
+				w.Header().Set("Content-Type", "text/plain")
+				w.Header().Set("Content-Disposition", fmt.Sprintf(
+					"attachment; filename=tdea_%s_%s_%d.txt",
+					strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits,
+				))
+				_, _ = w.Write([]byte(txt))
+				return
+			}
+
+			respondJSON(w, vec)
+			return
+
+		default:
+			http.Error(w, "algorithm/mode not implemented yet", http.StatusNotImplemented)
+			return
+		}
 	}
 }
