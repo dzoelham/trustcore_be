@@ -120,9 +120,10 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 			_ = json.Unmarshal(b, &keyLens)
 		}
 
-		// Helper: known AES modes (fallback if catalogue is missing/empty)
+		// Helper: for all algorithm modes (fallback if catalogue is missing/empty)
 		aesModes := []string{"ECB", "CBC", "CFB", "OFB", "CTR", "GCM"}
 		tdeaModes := []string{"ECB", "CBC", "CFB", "OFB", "CTR"}
+		camModes := []string{"ECB", "CBC", "CFB", "OFB", "CTR", "GCM"}
 
 		// Decide how to validate `mode`
 		category := strings.ToUpper(strings.TrimSpace(cat.Category))
@@ -142,7 +143,7 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 					return
 				}
 			} else {
-				// Catalogue has empty/NULL modes; apply sensible fallback for AES
+				// Catalogue has empty/NULL modes; apply sensible fallback
 				if strings.EqualFold(alg, "AES") {
 					if !containsFold(aesModes, mode) {
 						http.Error(w, fmt.Sprintf("invalid mode for AES. allowed: %v", aesModes), http.StatusBadRequest)
@@ -151,6 +152,11 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 				} else if strings.EqualFold(alg, "TDEA") || strings.EqualFold(alg, "3DES") {
 					if !containsFold(tdeaModes, mode) {
 						http.Error(w, fmt.Sprintf("invalid mode for TDEA. allowed: %v", tdeaModes), http.StatusBadRequest)
+						return
+					}
+				} else if strings.EqualFold(alg, "CAMELLIA") {
+					if !containsFold(camModes, mode) {
+						http.Error(w, fmt.Sprintf("invalid mode for Camellia. allowed: %v", camModes), http.StatusBadRequest)
 						return
 					}
 				} else if strings.TrimSpace(mode) != "" && strings.EqualFold(category, "STREAM CIPHER") {
@@ -373,6 +379,103 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 				w.Header().Set("Content-Type", "text/plain")
 				w.Header().Set("Content-Disposition", fmt.Sprintf(
 					"attachment; filename=tdea_%s_%s_%d.txt",
+					strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits,
+				))
+				_, _ = w.Write([]byte(txt))
+				return
+			}
+
+			respondJSON(w, vec)
+			return
+
+		case "CAMELLIA":
+			vec, err := vector.GenerateCamelliaTestVectors(mode, tmode, vector.CamGenParams{
+				KeyBits:         req.KeyBits,
+				Count:           req.Count,
+				IncludeExpected: req.IncludeExpected,
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			// Persist (same pattern as AES/TDEA)
+			if err := db.Transaction(func(tx *gorm.DB) error {
+				for _, e := range vec.Encrypt {
+					in := strings.ToLower(e.Plaintext)
+					out := strings.ToLower(e.Ciphertext)
+					row := models.Vector{
+						UserID:    req.UserID,
+						ClientID:  req.ClientID,
+						Algorithm: vec.Algorithm,
+						Mode:      vec.Mode,
+						TestMode:  vec.TestMode,
+						Direction: "ENCRYPT",
+						InputHex:  sp(in),
+						OutputHex: sp(out),
+						Status:    "ready",
+					}
+					if err := tx.Create(&row).Error; err != nil {
+						return err
+					}
+				}
+				for _, d := range vec.Decrypt {
+					in := strings.ToLower(d.Ciphertext)
+					out := strings.ToLower(d.Plaintext)
+					row := models.Vector{
+						UserID:    req.UserID,
+						ClientID:  req.ClientID,
+						Algorithm: vec.Algorithm,
+						Mode:      vec.Mode,
+						TestMode:  vec.TestMode,
+						Direction: "DECRYPT",
+						InputHex:  sp(in),
+						OutputHex: sp(out),
+						Status:    "ready",
+					}
+					if err := tx.Create(&row).Error; err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			if strings.ToLower(req.Format) == "txt" {
+				// TXT honoring include_expected (like your AES/TDEA branches)
+				var b strings.Builder
+				b.WriteString("[ENCRYPT]\n\n")
+				for _, r := range vec.Encrypt {
+					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
+					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
+					if strings.TrimSpace(r.IVHex) != "" {
+						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
+					}
+					b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
+					if req.IncludeExpected && strings.TrimSpace(r.Ciphertext) != "" {
+						b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
+					}
+					b.WriteString("\n")
+				}
+				b.WriteString("[DECRYPT]\n\n")
+				for _, r := range vec.Decrypt {
+					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
+					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
+					if strings.TrimSpace(r.IVHex) != "" {
+						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
+					}
+					b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
+					if req.IncludeExpected && strings.TrimSpace(r.Plaintext) != "" {
+						b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
+					}
+					b.WriteString("\n")
+				}
+				txt := b.String()
+				w.Header().Set("Content-Type", "text/plain")
+				w.Header().Set("Content-Disposition", fmt.Sprintf(
+					"attachment; filename=camellia_%s_%s_%d.txt",
 					strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits,
 				))
 				_, _ = w.Write([]byte(txt))

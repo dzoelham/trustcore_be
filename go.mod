@@ -3,6 +3,7 @@ module trustcore
 go 1.25
 
 require (
+	github.com/aead/camellia v0.0.0-20160715082721-02c306d3605b
 	github.com/go-chi/chi/v5 v5.0.11
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
