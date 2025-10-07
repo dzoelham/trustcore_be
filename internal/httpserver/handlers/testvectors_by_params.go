@@ -39,9 +39,12 @@ func containsInt(list []int, x int) bool {
 // POST /v1/cryptography/vectors
 func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFunc {
 	type reqT struct {
-		Algorithm       string `json:"algorithm"`
-		Mode            string `json:"mode"`
-		TestMode        string `json:"test_mode"`
+		Algorithm string `json:"algorithm"`
+		Mode      string `json:"mode"`
+		TestMode  string `json:"test_mode"`
+
+		// When AES + KAT, this selects the KAT "input mode"/subtype: gfsbox | keysbox | varkey | vartxt
+		InputMode       string `json:"input_mode"`
 		KeyBits         int    `json:"key_bits"`
 		Count           int    `json:"count"`
 		IncludeExpected bool   `json:"include_expected"`
@@ -69,6 +72,26 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 		alg := strings.ToUpper(strings.TrimSpace(req.Algorithm))
 		mode := strings.ToUpper(strings.TrimSpace(req.Mode))
 		tmode := strings.ToUpper(strings.TrimSpace(req.TestMode))
+
+		// Extra validation: if AES + KAT, ensure input_mode is present and valid
+		if strings.EqualFold(alg, "AES") && strings.EqualFold(tmode, "KAT") {
+			allowed := []string{"GFSBOX", "KEYSBOX", "VARKEY", "VARTXT"}
+			if strings.TrimSpace(strings.ToUpper(req.InputMode)) == "" {
+				http.Error(w, fmt.Sprintf("for AES KAT, input_mode must be one of %v", allowed), http.StatusBadRequest)
+				return
+			}
+			valid := false
+			for _, a := range allowed {
+				if strings.EqualFold(req.InputMode, a) {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				http.Error(w, fmt.Sprintf("for AES KAT, input_mode must be one of %v", allowed), http.StatusBadRequest)
+				return
+			}
+		}
 
 		if alg == "" || tmode == "" {
 			http.Error(w, "algorithm and test_mode are required", http.StatusBadRequest)
@@ -194,6 +217,8 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 				KeyBits:         req.KeyBits,
 				Count:           req.Count,
 				IncludeExpected: req.IncludeExpected,
+
+				KatVariant: req.InputMode,
 			})
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)

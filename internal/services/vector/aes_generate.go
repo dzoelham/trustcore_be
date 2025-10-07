@@ -24,6 +24,8 @@ type AESGenParams struct {
 	KeyBits         int
 	Count           int
 	IncludeExpected bool
+	// Only used when test_mode == KAT for AES
+	KatVariant string
 }
 
 type EncRecord struct {
@@ -437,3 +439,77 @@ func (v AESTestVector) ToTXT() string {
 }
 
 func fmtInt(i int) string { return strconv.Itoa(i) }
+
+func selectIV(mode string, iv128 []byte, nonce96 []byte) []byte {
+	if strings.ToUpper(mode) == "GCM" {
+		return nonce96
+	}
+	return iv128
+}
+
+func setLeftmostBits(nBytes, bits int) []byte {
+	if bits <= 0 {
+		return make([]byte, nBytes)
+	}
+	if bits > nBytes*8 {
+		bits = nBytes * 8
+	}
+	b := make([]byte, nBytes)
+	full := bits / 8
+	rem := bits % 8
+	for i := 0; i < full; i++ {
+		b[i] = 0xFF
+	}
+	if rem > 0 {
+		b[full] = ^byte(0xFF >> rem)
+	}
+	return b
+}
+
+func decryptOne(mode string, blk cipher.Block, iv []byte, nonce []byte, ct []byte) []byte {
+	switch strings.ToUpper(mode) {
+	case "ECB":
+		pt := make([]byte, 16)
+		blk.Decrypt(pt, ct[:16])
+		return pt
+	case "CBC":
+		pt := make([]byte, 16)
+		cipher.NewCBCDecrypter(blk, iv).CryptBlocks(pt, ct[:16])
+		return pt
+	case "CFB":
+		pt := make([]byte, len(ct))
+		cipher.NewCFBDecrypter(blk, iv).XORKeyStream(pt, ct[:len(pt)])
+		if len(pt) >= 16 {
+			return pt[:16]
+		}
+		return pt
+	case "OFB":
+		pt := make([]byte, len(ct))
+		cipher.NewOFB(blk, iv).XORKeyStream(pt, ct[:len(pt)])
+		if len(pt) >= 16 {
+			return pt[:16]
+		}
+		return pt
+	case "CTR":
+		pt := make([]byte, len(ct))
+		cipher.NewCTR(blk, iv).XORKeyStream(pt, ct[:len(pt)])
+		if len(pt) >= 16 {
+			return pt[:16]
+		}
+		return pt
+	case "GCM":
+		aead, err := cipher.NewGCM(blk)
+		if err != nil {
+			return make([]byte, 16)
+		}
+		pt, err := aead.Open(nil, nonce, ct, nil)
+		if err != nil {
+			return make([]byte, 16)
+		}
+		if len(pt) >= 16 {
+			return pt[:16]
+		}
+		return pt
+	}
+	return make([]byte, 16)
+}
