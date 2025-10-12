@@ -103,9 +103,6 @@ func encryptOne(mode string, blk cipher.Block, iv []byte, nonce []byte, pt []byt
 }
 
 func GenerateAESTestVectors(mode string, test string, p AESGenParams) (AESTestVector, error) {
-	if p.Count <= 0 {
-		p.Count = 10
-	}
 	switch p.KeyBits {
 	case 128, 192, 256:
 	default:
@@ -213,7 +210,8 @@ func GenerateAESTestVectors(mode string, test string, p AESGenParams) (AESTestVe
 			// plaintext=0, IV=0
 			pt := make([]byte, 16)
 			limit := min(p.Count, p.KeyBits) // one test per bit
-			for i := 0; i < limit; i++ {
+			// limit := 128
+			for i := range limit {
 				key := setLeftmostBits(keyLen, i+1) // COUNT=0 => 1 bit -> 0x80..
 				blk, _ := aes.NewCipher(key)
 				ct, _ := encryptOne(mode, blk, zeroIV, zeroNonce, pt)
@@ -244,7 +242,8 @@ func GenerateAESTestVectors(mode string, test string, p AESGenParams) (AESTestVe
 			key := make([]byte, keyLen)
 			blk, _ := aes.NewCipher(key)
 			limit := min(p.Count, 128) // one test per bit in a 128-bit block
-			for i := 0; i < limit; i++ {
+			// limit := 128
+			for i := range limit {
 				pt := setLeftmostBits(16, i+1)
 				ct, _ := encryptOne(mode, blk, zeroIV, zeroNonce, pt)
 
