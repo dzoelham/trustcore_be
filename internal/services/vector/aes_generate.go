@@ -272,88 +272,45 @@ func GenerateAESTestVectors(mode string, test string, p AESGenParams) (AESTestVe
 		}
 
 	case MMT:
-		key := make([]byte, keyLen)
-		iv := make([]byte, 16)
-		nonce := make([]byte, 12)
-		blk, _ := aes.NewCipher(key)
-		for i := 0; i < p.Count; i++ {
-			msg := randBytes(16 * 3)
-			switch mode {
-			case "ECB":
-				ct := make([]byte, len(msg))
-				for off := 0; off < len(msg); off += 16 {
-					blk.Encrypt(ct[off:off+16], msg[off:off+16])
-				}
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), Plaintext: hex.EncodeToString(msg[:16])}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, Ciphertext: hex.EncodeToString(ct[:16])}
-				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(ct[:16])
-					dec.Plaintext = hex.EncodeToString(msg[:16])
-				}
-				out.Encrypt = append(out.Encrypt, enc)
-				out.Decrypt = append(out.Decrypt, dec)
-
-			case "CBC":
-				ct := make([]byte, len(msg))
-				cipher.NewCBCEncrypter(blk, iv).CryptBlocks(ct, msg)
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: hex.EncodeToString(iv), Plaintext: hex.EncodeToString(msg[:16])}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(ct[:16])}
-				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(ct[:16])
-					dec.Plaintext = hex.EncodeToString(msg[:16])
-				}
-				out.Encrypt = append(out.Encrypt, enc)
-				out.Decrypt = append(out.Decrypt, dec)
-
-			case "CFB":
-				ct := make([]byte, len(msg))
-				cipher.NewCFBEncrypter(blk, iv).XORKeyStream(ct, msg)
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: hex.EncodeToString(iv), Plaintext: hex.EncodeToString(msg[:16])}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(ct[:16])}
-				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(ct[:16])
-					dec.Plaintext = hex.EncodeToString(msg[:16])
-				}
-				out.Encrypt = append(out.Encrypt, enc)
-				out.Decrypt = append(out.Decrypt, dec)
-
-			case "OFB":
-				ct := make([]byte, len(msg))
-				cipher.NewOFB(blk, iv).XORKeyStream(ct, msg)
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: hex.EncodeToString(iv), Plaintext: hex.EncodeToString(msg[:16])}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(ct[:16])}
-				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(ct[:16])
-					dec.Plaintext = hex.EncodeToString(msg[:16])
-				}
-				out.Encrypt = append(out.Encrypt, enc)
-				out.Decrypt = append(out.Decrypt, dec)
-
-			case "CTR":
-				ct := make([]byte, len(msg))
-				cipher.NewCTR(blk, iv).XORKeyStream(ct, msg)
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: hex.EncodeToString(iv), Plaintext: hex.EncodeToString(msg[:16])}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(ct[:16])}
-				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(ct[:16])
-					dec.Plaintext = hex.EncodeToString(msg[:16])
-				}
-				out.Encrypt = append(out.Encrypt, enc)
-				out.Decrypt = append(out.Decrypt, dec)
-
-			case "GCM":
-				aead, _ := cipher.NewGCM(blk)
-				ct := aead.Seal(nil, nonce, msg, nil)
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: hex.EncodeToString(nonce), Plaintext: hex.EncodeToString(msg[:16])}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(ct[:16])}
-				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(ct[:16])
-					dec.Plaintext = hex.EncodeToString(msg[:16])
-				}
-				out.Encrypt = append(out.Encrypt, enc)
-				out.Decrypt = append(out.Decrypt, dec)
-			}
+		
+		// MMT: plaintext grows with COUNT; cap to 10 per AESAVS convention.
+		loopCount := p.Count
+		if loopCount > 10 {
+			loopCount = 10
 		}
+		for i := 0; i < loopCount; i++ {
+			// Fresh random key and IV/nonce for each COUNT
+			key := randBytes(keyLen)
+			iv := randBytes(16)
+			nonce := randBytes(12)
+			blk, _ := aes.NewCipher(key)
+
+			// Plaintext length grows with COUNT: (i+1) * 16 bytes
+			msg := randBytes((i + 1) * 16)
+
+			// Encrypt entire message according to mode
+			ct, _ := encryptOne(mode, blk, iv, nonce, msg)
+
+			enc := EncRecord{
+				Count:     i,
+				KeyHex:    hex.EncodeToString(key),
+				IVHex:     ivOrNonceHex(mode, iv, nonce),
+				Plaintext: hex.EncodeToString(msg),
+			}
+			dec := DecRecord{
+				Count:      i,
+				KeyHex:     enc.KeyHex,
+				IVHex:      enc.IVHex,
+				Ciphertext: hex.EncodeToString(ct),
+			}
+			if p.IncludeExpected {
+				enc.Ciphertext = hex.EncodeToString(ct)
+				dec.Plaintext = hex.EncodeToString(msg)
+			}
+			out.Encrypt = append(out.Encrypt, enc)
+			out.Decrypt = append(out.Decrypt, dec)
+		}
+		
 
 	case MCT:
 		key := make([]byte, keyLen)
