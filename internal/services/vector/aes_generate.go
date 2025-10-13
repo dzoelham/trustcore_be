@@ -72,12 +72,20 @@ func min(a, b int) int {
 func encryptOne(mode string, blk cipher.Block, iv []byte, nonce []byte, pt []byte) ([]byte, error) {
 	switch strings.ToUpper(mode) {
 	case "ECB":
-		ct := make([]byte, 16)
-		blk.Encrypt(ct, pt[:16])
+		if len(pt)%16 != 0 {
+			return nil, fmt.Errorf("ECB requires full blocks: got %%d", len(pt))
+		}
+		ct := make([]byte, len(pt))
+		for off := 0; off < len(pt); off += 16 {
+			blk.Encrypt(ct[off:off+16], pt[off:off+16])
+		}
 		return ct, nil
 	case "CBC":
-		ct := make([]byte, 16)
-		cipher.NewCBCEncrypter(blk, iv).CryptBlocks(ct, pt[:16])
+		if len(pt)%16 != 0 {
+			return nil, fmt.Errorf("CBC requires full blocks: got %%d", len(pt))
+		}
+		ct := make([]byte, len(pt))
+		cipher.NewCBCEncrypter(blk, iv).CryptBlocks(ct, pt)
 		return ct, nil
 	case "CFB":
 		ct := make([]byte, len(pt))
