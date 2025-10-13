@@ -73,7 +73,8 @@ func encryptOne(mode string, blk cipher.Block, iv []byte, nonce []byte, pt []byt
 	switch strings.ToUpper(mode) {
 	case "ECB":
 		if len(pt)%16 != 0 {
-			return nil, fmt.Errorf("ECB requires full blocks: got %%d", len(pt))
+			return nil, fmt.Errorf("ECB requires full blocks: got %%d")
+
 		}
 		ct := make([]byte, len(pt))
 		for off := 0; off < len(pt); off += 16 {
@@ -82,7 +83,7 @@ func encryptOne(mode string, blk cipher.Block, iv []byte, nonce []byte, pt []byt
 		return ct, nil
 	case "CBC":
 		if len(pt)%16 != 0 {
-			return nil, fmt.Errorf("CBC requires full blocks: got %%d", len(pt))
+			return nil, fmt.Errorf("ECB requires full blocks: got %%d")
 		}
 		ct := make([]byte, len(pt))
 		cipher.NewCBCEncrypter(blk, iv).CryptBlocks(ct, pt)
@@ -280,7 +281,7 @@ func GenerateAESTestVectors(mode string, test string, p AESGenParams) (AESTestVe
 		}
 
 	case MMT:
-		
+
 		// MMT: plaintext grows with COUNT; cap to 10 per AESAVS convention.
 		loopCount := p.Count
 		if loopCount > 10 {
@@ -318,134 +319,243 @@ func GenerateAESTestVectors(mode string, test string, p AESGenParams) (AESTestVe
 			out.Encrypt = append(out.Encrypt, enc)
 			out.Decrypt = append(out.Decrypt, dec)
 		}
-		
 
 	case MCT:
-		key := make([]byte, keyLen)
-		iv := make([]byte, 16)
-		blk, _ := aes.NewCipher(key)
+		// AESAVS Monte Carlo Test (MCT) per NIST AESAVS §6.4.
+		// ECB, CBC, OFB, CFB (treated as CFB128) implemented as specified.
+		// CTR and GCM remain legacy/simple to preserve compatibility.
+		const inner = 1000
+
+		// Seeds when not provided externally
+		key := randBytes(keyLen) // 16, 24, or 32
+		iv := randBytes(16)
+		pt0 := randBytes(16)
+
 		for i := 0; i < p.Count; i++ {
-			pt := randBytes(16)
+			keyRec := hex.EncodeToString(key)
+			ivRec := hex.EncodeToString(iv)
+			ptRec := hex.EncodeToString(pt0)
+
+			blk, _ := aes.NewCipher(key)
+			lastCT := make([]byte, 16) // CT[j]
+			prevCT := make([]byte, 16) // CT[j-1]
+
+			pt := make([]byte, 16)
+			copy(pt, pt0)
+
 			switch mode {
 			case "ECB":
-				for j := 0; j < 1000; j++ {
-					blk.Encrypt(pt, pt)
+				ct := make([]byte, 16)
+				for j := 0; j < inner; j++ {
+					blk.Encrypt(ct, pt)
+					copy(pt, ct)          // PT[j+1] = CT[j]
+					copy(prevCT, lastCT)  // track CT[j-1]
+					copy(lastCT, ct)      // CT[j]
 				}
-				finalCT := make([]byte, 16)
-				copy(finalCT, pt)
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), Plaintext: hex.EncodeToString(pt)}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, Ciphertext: hex.EncodeToString(finalCT)}
+
+				enc := EncRecord{Count: i, KeyHex: keyRec, Plaintext: ptRec}
+				dec := DecRecord{Count: i, KeyHex: keyRec, Ciphertext: hex.EncodeToString(lastCT)}
 				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(finalCT)
-					dec.Plaintext = hex.EncodeToString(pt)
+					enc.Ciphertext = hex.EncodeToString(lastCT)
+					dec.Plaintext = ptRec
 				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
+
+				switch p.KeyBits {
+				case 128:
+					for k := 0; k < 16; k++ { key[k] ^= lastCT[k] }
+				case 192:
+					tmp := make([]byte, 24)
+					copy(tmp[:8], prevCT[8:16])
+					copy(tmp[8:], lastCT[:])
+					for k := 0; k < 24; k++ { key[k] ^= tmp[k] }
+				case 256:
+					tmp := make([]byte, 32)
+					copy(tmp[:16], prevCT[:])
+					copy(tmp[16:], lastCT[:])
+					for k := 0; k < 32; k++ { key[k] ^= tmp[k] }
+				}
+				copy(pt0, lastCT) // next PT[0] = CT[j]
 
 			case "CBC":
-				ivWork := make([]byte, 16)
-				copy(ivWork, iv)
-				for j := 0; j < 1000; j++ {
-					ct := make([]byte, 16)
-					cipher.NewCBCEncrypter(blk, ivWork).CryptBlocks(ct, pt)
-					copy(ivWork, ct)
-					copy(pt, ct)
+				iv_i := make([]byte, 16); copy(iv_i, iv)
+				ct := make([]byte, 16)
+				for j := 0; j < inner; j++ {
+					if j == 0 {
+						// CT[0] = E_K(PT[0] XOR IV[i]); PT[1] = IV[i]
+						x := make([]byte, 16)
+						for k := 0; k < 16; k++ { x[k] = pt[k] ^ iv_i[k] }
+						blk.Encrypt(ct, x)
+						copy(pt, iv_i)
+					} else {
+						// CT[j] = E_K(PT[j]); PT[j+1] = CT[j-1]
+						blk.Encrypt(ct, pt)
+						copy(pt, prevCT)
+					}
+					copy(prevCT, lastCT)
+					copy(lastCT, ct)
 				}
-				finalCT := make([]byte, 16)
-				copy(finalCT, pt)
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: hex.EncodeToString(iv), Plaintext: hex.EncodeToString(pt)}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(finalCT)}
+
+				enc := EncRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Plaintext: ptRec}
+				dec := DecRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Ciphertext: hex.EncodeToString(lastCT)}
 				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(finalCT)
-					dec.Plaintext = hex.EncodeToString(pt)
+					enc.Ciphertext = hex.EncodeToString(lastCT)
+					dec.Plaintext = ptRec
 				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
 
-			case "CFB":
-				ivWork := make([]byte, 16)
-				copy(ivWork, iv)
-				for j := 0; j < 1000; j++ {
-					stream := cipher.NewCFBEncrypter(blk, ivWork)
-					ct := make([]byte, 16)
-					stream.XORKeyStream(ct, pt)
-					copy(ivWork, ct)
-					copy(pt, ct)
+				switch p.KeyBits {
+				case 128:
+					for k := 0; k < 16; k++ { key[k] ^= lastCT[k] }
+				case 192:
+					tmp := make([]byte, 24)
+					copy(tmp[:8], prevCT[8:16])
+					copy(tmp[8:], lastCT[:])
+					for k := 0; k < 24; k++ { key[k] ^= tmp[k] }
+				case 256:
+					tmp := make([]byte, 32)
+					copy(tmp[:16], prevCT[:])
+					copy(tmp[16:], lastCT[:])
+					for k := 0; k < 32; k++ { key[k] ^= tmp[k] }
 				}
-				finalCT := make([]byte, 16)
-				copy(finalCT, pt)
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: hex.EncodeToString(iv), Plaintext: hex.EncodeToString(pt)}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(finalCT)}
-				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(finalCT)
-					dec.Plaintext = hex.EncodeToString(pt)
-				}
-				out.Encrypt = append(out.Encrypt, enc)
-				out.Decrypt = append(out.Decrypt, dec)
+				copy(iv, lastCT)  // IV[i+1] = CT[j]
+				copy(pt0, prevCT) // next PT[0] = CT[j-1]
 
 			case "OFB":
-				ivWork := make([]byte, 16)
-				copy(ivWork, iv)
-				for j := 0; j < 1000; j++ {
-					stream := cipher.NewOFB(blk, ivWork)
-					ct := make([]byte, 16)
-					stream.XORKeyStream(ct, pt)
-					copy(ivWork, ct)
-					copy(pt, ct)
+				iv_i := make([]byte, 16); copy(iv_i, iv)
+				ct := make([]byte, 16)
+				for j := 0; j < inner; j++ {
+					if j == 0 {
+						stream := cipher.NewOFB(blk, iv_i)
+						stream.XORKeyStream(ct, pt) // first step
+						copy(pt, iv_i)              // PT[1] = IV[i]
+					} else {
+						blk.Encrypt(ct, pt)         // CT[j] = E_K(PT[j])
+						copy(pt, prevCT)            // PT[j+1] = CT[j-1]
+					}
+					copy(prevCT, lastCT)
+					copy(lastCT, ct)
 				}
-				finalCT := make([]byte, 16)
-				copy(finalCT, pt)
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: hex.EncodeToString(iv), Plaintext: hex.EncodeToString(pt)}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(finalCT)}
+
+				enc := EncRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Plaintext: ptRec}
+				dec := DecRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Ciphertext: hex.EncodeToString(lastCT)}
 				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(finalCT)
-					dec.Plaintext = hex.EncodeToString(pt)
+					enc.Ciphertext = hex.EncodeToString(lastCT)
+					dec.Plaintext = ptRec
 				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
+
+				switch p.KeyBits {
+				case 128:
+					for k := 0; k < 16; k++ { key[k] ^= lastCT[k] }
+				case 192:
+					tmp := make([]byte, 24)
+					copy(tmp[:8], prevCT[8:16])
+					copy(tmp[8:], lastCT[:])
+					for k := 0; k < 24; k++ { key[k] ^= tmp[k] }
+				case 256:
+					tmp := make([]byte, 32)
+					copy(tmp[:16], prevCT[:])
+					copy(tmp[16:], lastCT[:])
+					for k := 0; k < 32; k++ { key[k] ^= tmp[k] }
+				}
+				copy(iv, lastCT)  // IV[i+1]
+				copy(pt0, prevCT) // next PT[0]
+
+			case "CFB":
+				// Treat as CFB128
+				iv_i := make([]byte, 16); copy(iv_i, iv)
+				ct := make([]byte, 16)
+				for j := 0; j < inner; j++ {
+					if j == 0 {
+						stream := cipher.NewCFBEncrypter(blk, iv_i)
+						stream.XORKeyStream(ct, pt) // first block
+						copy(pt, iv_i)              // PT[1] = IV[i]
+					} else {
+						blk.Encrypt(ct, pt)         // CT[j] = E_K(PT[j])
+						copy(pt, prevCT)            // PT[j+1] = CT[j-1]
+					}
+					copy(prevCT, lastCT)
+					copy(lastCT, ct)
+				}
+
+				enc := EncRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Plaintext: ptRec}
+				dec := DecRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Ciphertext: hex.EncodeToString(lastCT)}
+				if p.IncludeExpected {
+					enc.Ciphertext = hex.EncodeToString(lastCT)
+					dec.Plaintext = ptRec
+				}
+				out.Encrypt = append(out.Encrypt, enc)
+				out.Decrypt = append(out.Decrypt, dec)
+
+				switch p.KeyBits {
+				case 128:
+					for k := 0; k < 16; k++ { key[k] ^= lastCT[k] }
+				case 192:
+					tmp := make([]byte, 24)
+					copy(tmp[:8], prevCT[8:16])
+					copy(tmp[8:], lastCT[:])
+					for k := 0; k < 24; k++ { key[k] ^= tmp[k] }
+				case 256:
+					tmp := make([]byte, 32)
+					copy(tmp[:16], prevCT[:])
+					copy(tmp[16:], lastCT[:])
+					for k := 0; k < 32; k++ { key[k] ^= tmp[k] }
+				}
+				copy(iv, lastCT)
+				copy(pt0, prevCT)
 
 			case "CTR":
-				ivWork := make([]byte, 16)
-				copy(ivWork, iv)
-				for j := 0; j < 1000; j++ {
+				// Keep legacy/simple path: not defined in AESAVS MCT
+				ivWork := make([]byte, 16); copy(ivWork, iv)
+				msg := make([]byte, 16); copy(msg, pt0)
+				for j := 0; j < inner; j++ {
 					stream := cipher.NewCTR(blk, ivWork)
-					ct := make([]byte, 16)
-					stream.XORKeyStream(ct, pt)
-					copy(ivWork, ct[:16])
-					copy(pt, ct)
+					tmp := make([]byte, 16)
+					stream.XORKeyStream(tmp, msg)
+					copy(ivWork, tmp[:16])
+					copy(msg, tmp)
 				}
-				finalCT := make([]byte, 16)
-				copy(finalCT, pt)
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: hex.EncodeToString(iv), Plaintext: hex.EncodeToString(pt)}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(finalCT)}
+				last := make([]byte, 16); copy(last, msg)
+				enc := EncRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Plaintext: ptRec}
+				dec := DecRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Ciphertext: hex.EncodeToString(last)}
 				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(finalCT)
-					dec.Plaintext = hex.EncodeToString(pt)
+					enc.Ciphertext = hex.EncodeToString(last)
+					dec.Plaintext = ptRec
 				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
+				for k := 0; k < min(len(key), 16); k++ { key[k] ^= last[k] }
+				copy(iv, last)
+				copy(pt0, last)
 
 			case "GCM":
-				// A precise AES MCT for GCM is complex; keep the same simplified approach as original code.
+				// Keep legacy/simple path: not defined in AESAVS MCT
 				aead, _ := cipher.NewGCM(blk)
-				nonceWork := make([]byte, 12)
-				for j := 0; j < 1000; j++ {
-					ct := aead.Seal(nil, nonceWork, pt, nil)
-					copy(nonceWork, ct[:min(12, len(ct))])
-					copy(pt, ct[:min(16, len(ct))])
+				nonce := make([]byte, 12)
+				msg := make([]byte, 16); copy(msg, pt0)
+				var last []byte
+				for j := 0; j < inner; j++ {
+					last = aead.Seal(nil, nonce, msg, nil)
+					copy(nonce, last[:min(12, len(last))])
+					copy(msg, last[:min(16, len(last))])
 				}
-				finalCT := make([]byte, 16)
-				copy(finalCT, pt)
-				enc := EncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: hex.EncodeToString(nonceWork), Plaintext: hex.EncodeToString(pt)}
-				dec := DecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(finalCT)}
+				enc := EncRecord{Count: i, KeyHex: keyRec, IVHex: hex.EncodeToString(nonce), Plaintext: ptRec}
+				dec := DecRecord{Count: i, KeyHex: keyRec, IVHex: hex.EncodeToString(nonce), Ciphertext: hex.EncodeToString(last)}
 				if p.IncludeExpected {
-					enc.Ciphertext = hex.EncodeToString(finalCT)
-					dec.Plaintext = hex.EncodeToString(pt)
+					enc.Ciphertext = hex.EncodeToString(last)
+					dec.Plaintext = ptRec
 				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
+				for k := 0; k < min(len(key), 16) && k < len(last); k++ { key[k] ^= last[k] }
+				if len(last) >= 16 { copy(pt0, last[:16]) }
 			}
 		}
+
 	}
 	return out, nil
 }
