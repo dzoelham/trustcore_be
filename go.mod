@@ -3,6 +3,7 @@ module trustcore
 go 1.25
 
 require (
+	github.com/RyuaNerin/go-krypto v1.3.0
 	github.com/aead/camellia v0.0.0-20160715082721-02c306d3605b
 	github.com/go-chi/chi/v5 v5.0.11
 	github.com/golang-jwt/jwt/v5 v5.2.1

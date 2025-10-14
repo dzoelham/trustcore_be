@@ -1,3 +1,7 @@
+github.com/RyuaNerin/go-krypto v1.3.0 h1:smavTzSMAx8iuVlGb4pEwl9MD2qicqMzuXR2QWp2/Pg=
+github.com/RyuaNerin/go-krypto v1.3.0/go.mod h1:9R9TU936laAIqAmjcHo/LsaXYOZlymudOAxjaBf62UM=
+github.com/RyuaNerin/testingutil v0.1.0 h1:IYT6JL57RV3U2ml3dLHZsVtPOP6yNK7WUVdzzlpNrss=
+github.com/RyuaNerin/testingutil v0.1.0/go.mod h1:yTqj6Ta/ycHMPJHRyO12Mz3VrvTloWOsy23WOZH19AA=
 github.com/aead/camellia v0.0.0-20160715082721-02c306d3605b h1:klndGldEV84e3Zu3KLlbvyJDrIqjCfEyA3HanMO5cIc=
 github.com/aead/camellia v0.0.0-20160715082721-02c306d3605b/go.mod h1:3i8LghYjD71h3pav8nBvYRnFnuPAikYQsd4JYXLIYYk=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
