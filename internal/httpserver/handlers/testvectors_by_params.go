@@ -217,8 +217,7 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 				KeyBits:         req.KeyBits,
 				Count:           req.Count,
 				IncludeExpected: req.IncludeExpected,
-
-				KatVariant: req.InputMode,
+				KatVariant:      req.InputMode,
 			})
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
@@ -418,6 +417,7 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 				KeyBits:         req.KeyBits,
 				Count:           req.Count,
 				IncludeExpected: req.IncludeExpected,
+				KatVariant:      req.InputMode,
 			})
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)

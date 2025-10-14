@@ -1,4 +1,3 @@
-
 package vector
 
 import (
@@ -24,7 +23,7 @@ type CamGenParams struct {
 	Count           int
 	IncludeExpected bool
 	// Only used when test_mode == KAT. Allowed: GFSBOX | KEYSBOX | VARKEY | VARTXT
-	KatVariant      string
+	KatVariant string
 }
 
 type CamEncRecord struct {
@@ -146,14 +145,16 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 	case CAM_KAT:
 		variant := strings.ToUpper(strings.TrimSpace(p.KatVariant))
 		if variant == "" {
-			variant = "GFSBOX"
+			return CamTestVector{}, fmt.Errorf("KatVariant must be specified for KAT (allowed: GFSBOX, KEYSBOX, VARKEY, VARTXT)")
 		}
 		zeroKey := make([]byte, keyLen)
 		zeroIV := make([]byte, 16)
 		zeroNonce := make([]byte, 12)
 
 		blk, err := camellia.NewCipher(zeroKey)
-		if err != nil { return CamTestVector{}, err }
+		if err != nil {
+			return CamTestVector{}, err
+		}
 
 		switch variant {
 		case "GFSBOX":
@@ -162,7 +163,10 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 				ct, _ := encryptOneCam(mode, blk, zeroIV, zeroNonce, pt)
 				enc := CamEncRecord{Count: i, KeyHex: hex.EncodeToString(zeroKey), IVHex: ivOrNonceHex(mode, zeroIV, zeroNonce), Plaintext: hex.EncodeToString(pt)}
 				dec := CamDecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(ct)}
-				if p.IncludeExpected { enc.Ciphertext = hex.EncodeToString(ct); dec.Plaintext = hex.EncodeToString(pt) }
+				if p.IncludeExpected {
+					enc.Ciphertext = hex.EncodeToString(ct)
+					dec.Plaintext = hex.EncodeToString(pt)
+				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
 			}
@@ -171,11 +175,16 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 			pt := make([]byte, 16)
 			for i := 0; i < p.Count; i++ {
 				key := randBytes(keyLen)
+				iv := randBytes(16)
+				nonce := randBytes(12)
 				blk, _ := camellia.NewCipher(key)
-				ct, _ := encryptOneCam(mode, blk, zeroIV, zeroNonce, pt)
-				enc := CamEncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: ivOrNonceHex(mode, zeroIV, zeroNonce), Plaintext: hex.EncodeToString(pt)}
+				ct, _ := encryptOneCam(mode, blk, iv, nonce, pt)
+				enc := CamEncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: ivOrNonceHex(mode, iv, nonce), Plaintext: hex.EncodeToString(pt)}
 				dec := CamDecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(ct)}
-				if p.IncludeExpected { enc.Ciphertext = hex.EncodeToString(ct); dec.Plaintext = hex.EncodeToString(pt) }
+				if p.IncludeExpected {
+					enc.Ciphertext = hex.EncodeToString(ct)
+					dec.Plaintext = hex.EncodeToString(pt)
+				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
 			}
@@ -189,7 +198,10 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 				ct, _ := encryptOneCam(mode, blk, zeroIV, zeroNonce, pt)
 				enc := CamEncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: ivOrNonceHex(mode, zeroIV, zeroNonce), Plaintext: hex.EncodeToString(pt)}
 				dec := CamDecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(ct)}
-				if p.IncludeExpected { enc.Ciphertext = hex.EncodeToString(ct); dec.Plaintext = hex.EncodeToString(pt) }
+				if p.IncludeExpected {
+					enc.Ciphertext = hex.EncodeToString(ct)
+					dec.Plaintext = hex.EncodeToString(pt)
+				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
 			}
@@ -203,7 +215,10 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 				ct, _ := encryptOneCam(mode, blk, zeroIV, zeroNonce, pt)
 				enc := CamEncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: ivOrNonceHex(mode, zeroIV, zeroNonce), Plaintext: hex.EncodeToString(pt)}
 				dec := CamDecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(ct)}
-				if p.IncludeExpected { enc.Ciphertext = hex.EncodeToString(ct); dec.Plaintext = hex.EncodeToString(pt) }
+				if p.IncludeExpected {
+					enc.Ciphertext = hex.EncodeToString(ct)
+					dec.Plaintext = hex.EncodeToString(pt)
+				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
 			}
@@ -214,17 +229,22 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 	case CAM_MMT:
 		// MMT: plaintext grows with COUNT (cap at 10); fresh random key and IV/nonce per COUNT
 		loopCount := p.Count
-		if loopCount > 10 { loopCount = 10 }
+		if loopCount > 10 {
+			loopCount = 10
+		}
 		for i := 0; i < loopCount; i++ {
 			key := randBytes(keyLen)
 			iv := randBytes(16)
 			nonce := randBytes(12)
 			blk, _ := camellia.NewCipher(key)
-			msg := randBytes((i+1) * 16)
+			msg := randBytes((i + 1) * 16)
 			ct, _ := encryptOneCam(mode, blk, iv, nonce, msg)
 			enc := CamEncRecord{Count: i, KeyHex: hex.EncodeToString(key), IVHex: ivOrNonceHex(mode, iv, nonce), Plaintext: hex.EncodeToString(msg)}
 			dec := CamDecRecord{Count: i, KeyHex: enc.KeyHex, IVHex: enc.IVHex, Ciphertext: hex.EncodeToString(ct)}
-			if p.IncludeExpected { enc.Ciphertext = hex.EncodeToString(ct); dec.Plaintext = hex.EncodeToString(msg) }
+			if p.IncludeExpected {
+				enc.Ciphertext = hex.EncodeToString(ct)
+				dec.Plaintext = hex.EncodeToString(msg)
+			}
 			out.Encrypt = append(out.Encrypt, enc)
 			out.Decrypt = append(out.Decrypt, dec)
 		}
@@ -242,7 +262,8 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 			blk, _ := camellia.NewCipher(key)
 			lastCT := make([]byte, 16)
 			prevCT := make([]byte, 16)
-			pt := make([]byte, 16); copy(pt, pt0)
+			pt := make([]byte, 16)
+			copy(pt, pt0)
 
 			switch mode {
 			case "ECB":
@@ -255,32 +276,44 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 				}
 				enc := CamEncRecord{Count: i, KeyHex: keyRec, Plaintext: ptRec}
 				dec := CamDecRecord{Count: i, KeyHex: keyRec, Ciphertext: hex.EncodeToString(lastCT)}
-				if p.IncludeExpected { enc.Ciphertext = hex.EncodeToString(lastCT); dec.Plaintext = ptRec }
+				if p.IncludeExpected {
+					enc.Ciphertext = hex.EncodeToString(lastCT)
+					dec.Plaintext = ptRec
+				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
 				switch p.KeyBits {
 				case 128:
-					for k := 0; k < 16; k++ { key[k] ^= lastCT[k] }
+					for k := 0; k < 16; k++ {
+						key[k] ^= lastCT[k]
+					}
 				case 192:
 					tmp := make([]byte, 24)
 					copy(tmp[:8], prevCT[8:16])
 					copy(tmp[8:], lastCT[:])
-					for k := 0; k < 24; k++ { key[k] ^= tmp[k] }
+					for k := 0; k < 24; k++ {
+						key[k] ^= tmp[k]
+					}
 				case 256:
 					tmp := make([]byte, 32)
 					copy(tmp[:16], prevCT[:])
 					copy(tmp[16:], lastCT[:])
-					for k := 0; k < 32; k++ { key[k] ^= tmp[k] }
+					for k := 0; k < 32; k++ {
+						key[k] ^= tmp[k]
+					}
 				}
 				copy(pt0, lastCT)
 
 			case "CBC":
-				iv_i := make([]byte, 16); copy(iv_i, iv)
+				iv_i := make([]byte, 16)
+				copy(iv_i, iv)
 				ct := make([]byte, 16)
 				for j := 0; j < inner; j++ {
 					if j == 0 {
 						x := make([]byte, 16)
-						for k := 0; k < 16; k++ { x[k] = pt[k] ^ iv_i[k] }
+						for k := 0; k < 16; k++ {
+							x[k] = pt[k] ^ iv_i[k]
+						}
 						blk.Encrypt(ct, x)
 						copy(pt, iv_i)
 					} else {
@@ -292,28 +325,38 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 				}
 				enc := CamEncRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Plaintext: ptRec}
 				dec := CamDecRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Ciphertext: hex.EncodeToString(lastCT)}
-				if p.IncludeExpected { enc.Ciphertext = hex.EncodeToString(lastCT); dec.Plaintext = ptRec }
+				if p.IncludeExpected {
+					enc.Ciphertext = hex.EncodeToString(lastCT)
+					dec.Plaintext = ptRec
+				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
 				switch p.KeyBits {
 				case 128:
-					for k := 0; k < 16; k++ { key[k] ^= lastCT[k] }
+					for k := 0; k < 16; k++ {
+						key[k] ^= lastCT[k]
+					}
 				case 192:
 					tmp := make([]byte, 24)
 					copy(tmp[:8], prevCT[8:16])
 					copy(tmp[8:], lastCT[:])
-					for k := 0; k < 24; k++ { key[k] ^= tmp[k] }
+					for k := 0; k < 24; k++ {
+						key[k] ^= tmp[k]
+					}
 				case 256:
 					tmp := make([]byte, 32)
 					copy(tmp[:16], prevCT[:])
 					copy(tmp[16:], lastCT[:])
-					for k := 0; k < 32; k++ { key[k] ^= tmp[k] }
+					for k := 0; k < 32; k++ {
+						key[k] ^= tmp[k]
+					}
 				}
 				copy(iv, lastCT)
 				copy(pt0, prevCT)
 
 			case "OFB":
-				iv_i := make([]byte, 16); copy(iv_i, iv)
+				iv_i := make([]byte, 16)
+				copy(iv_i, iv)
 				ct := make([]byte, 16)
 				for j := 0; j < inner; j++ {
 					if j == 0 {
@@ -329,28 +372,38 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 				}
 				enc := CamEncRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Plaintext: ptRec}
 				dec := CamDecRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Ciphertext: hex.EncodeToString(lastCT)}
-				if p.IncludeExpected { enc.Ciphertext = hex.EncodeToString(lastCT); dec.Plaintext = ptRec }
+				if p.IncludeExpected {
+					enc.Ciphertext = hex.EncodeToString(lastCT)
+					dec.Plaintext = ptRec
+				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
 				switch p.KeyBits {
 				case 128:
-					for k := 0; k < 16; k++ { key[k] ^= lastCT[k] }
+					for k := 0; k < 16; k++ {
+						key[k] ^= lastCT[k]
+					}
 				case 192:
 					tmp := make([]byte, 24)
 					copy(tmp[:8], prevCT[8:16])
 					copy(tmp[8:], lastCT[:])
-					for k := 0; k < 24; k++ { key[k] ^= tmp[k] }
+					for k := 0; k < 24; k++ {
+						key[k] ^= tmp[k]
+					}
 				case 256:
 					tmp := make([]byte, 32)
 					copy(tmp[:16], prevCT[:])
 					copy(tmp[16:], lastCT[:])
-					for k := 0; k < 32; k++ { key[k] ^= tmp[k] }
+					for k := 0; k < 32; k++ {
+						key[k] ^= tmp[k]
+					}
 				}
 				copy(iv, lastCT)
 				copy(pt0, prevCT)
 
 			case "CFB":
-				iv_i := make([]byte, 16); copy(iv_i, iv)
+				iv_i := make([]byte, 16)
+				copy(iv_i, iv)
 				ct := make([]byte, 16)
 				for j := 0; j < inner; j++ {
 					if j == 0 {
@@ -366,29 +419,40 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 				}
 				enc := CamEncRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Plaintext: ptRec}
 				dec := CamDecRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Ciphertext: hex.EncodeToString(lastCT)}
-				if p.IncludeExpected { enc.Ciphertext = hex.EncodeToString(lastCT); dec.Plaintext = ptRec }
+				if p.IncludeExpected {
+					enc.Ciphertext = hex.EncodeToString(lastCT)
+					dec.Plaintext = ptRec
+				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
 				switch p.KeyBits {
 				case 128:
-					for k := 0; k < 16; k++ { key[k] ^= lastCT[k] }
+					for k := 0; k < 16; k++ {
+						key[k] ^= lastCT[k]
+					}
 				case 192:
 					tmp := make([]byte, 24)
 					copy(tmp[:8], prevCT[8:16])
 					copy(tmp[8:], lastCT[:])
-					for k := 0; k < 24; k++ { key[k] ^= tmp[k] }
+					for k := 0; k < 24; k++ {
+						key[k] ^= tmp[k]
+					}
 				case 256:
 					tmp := make([]byte, 32)
 					copy(tmp[:16], prevCT[:])
 					copy(tmp[16:], lastCT[:])
-					for k := 0; k < 32; k++ { key[k] ^= tmp[k] }
+					for k := 0; k < 32; k++ {
+						key[k] ^= tmp[k]
+					}
 				}
 				copy(iv, lastCT)
 				copy(pt0, prevCT)
 
 			case "CTR":
-				ivWork := make([]byte, 16); copy(ivWork, iv)
-				msg := make([]byte, 16); copy(msg, pt0)
+				ivWork := make([]byte, 16)
+				copy(ivWork, iv)
+				msg := make([]byte, 16)
+				copy(msg, pt0)
 				for j := 0; j < inner; j++ {
 					stream := cipher.NewCTR(blk, ivWork)
 					tmp := make([]byte, 16)
@@ -396,20 +460,27 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 					copy(ivWork, tmp[:16])
 					copy(msg, tmp)
 				}
-				last := make([]byte, 16); copy(last, msg)
+				last := make([]byte, 16)
+				copy(last, msg)
 				enc := CamEncRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Plaintext: ptRec}
 				dec := CamDecRecord{Count: i, KeyHex: keyRec, IVHex: ivRec, Ciphertext: hex.EncodeToString(last)}
-				if p.IncludeExpected { enc.Ciphertext = hex.EncodeToString(last); dec.Plaintext = ptRec }
+				if p.IncludeExpected {
+					enc.Ciphertext = hex.EncodeToString(last)
+					dec.Plaintext = ptRec
+				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
-				for k := 0; k < min(len(key), 16); k++ { key[k] ^= last[k] }
+				for k := 0; k < min(len(key), 16); k++ {
+					key[k] ^= last[k]
+				}
 				copy(iv, last)
 				copy(pt0, last)
 
 			case "GCM":
 				aead, _ := cipher.NewGCM(blk)
 				nonce := make([]byte, 12)
-				msg := make([]byte, 16); copy(msg, pt0)
+				msg := make([]byte, 16)
+				copy(msg, pt0)
 				var last []byte
 				for j := 0; j < inner; j++ {
 					last = aead.Seal(nil, nonce, msg, nil)
@@ -418,11 +489,18 @@ func GenerateCamelliaTestVectors(mode string, test string, p CamGenParams) (CamT
 				}
 				enc := CamEncRecord{Count: i, KeyHex: keyRec, IVHex: hex.EncodeToString(nonce), Plaintext: ptRec}
 				dec := CamDecRecord{Count: i, KeyHex: keyRec, IVHex: hex.EncodeToString(nonce), Ciphertext: hex.EncodeToString(last)}
-				if p.IncludeExpected { enc.Ciphertext = hex.EncodeToString(last); dec.Plaintext = ptRec }
+				if p.IncludeExpected {
+					enc.Ciphertext = hex.EncodeToString(last)
+					dec.Plaintext = ptRec
+				}
 				out.Encrypt = append(out.Encrypt, enc)
 				out.Decrypt = append(out.Decrypt, dec)
-				for k := 0; k < min(len(key), 16) && k < len(last); k++ { key[k] ^= last[k] }
-				if len(last) >= 16 { copy(pt0, last[:16]) }
+				for k := 0; k < min(len(key), 16) && k < len(last); k++ {
+					key[k] ^= last[k]
+				}
+				if len(last) >= 16 {
+					copy(pt0, last[:16])
+				}
 			}
 		}
 	}
