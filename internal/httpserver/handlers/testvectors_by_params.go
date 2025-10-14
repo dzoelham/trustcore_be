@@ -318,7 +318,10 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 
 		case "TDEA", "3DES":
 			vec, err := vector.GenerateTDEATestVectors(mode, tmode, vector.TDEAGenParams{
-				KeyBits: req.KeyBits, Count: req.Count, IncludeExpected: req.IncludeExpected,
+				KeyBits:         req.KeyBits,
+				Count:           req.Count,
+				IncludeExpected: req.IncludeExpected,
+				KatVariant:      req.InputMode,
 			})
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
