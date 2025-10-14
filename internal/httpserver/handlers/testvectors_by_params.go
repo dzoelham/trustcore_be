@@ -231,6 +231,27 @@ func seedGen(mode, tmode string, p baseParams) (stdVec, error) {
 	return out, nil
 }
 
+func misty1Gen(mode, tmode string, p baseParams) (stdVec, error) {
+	vec, err := vector.GenerateMISTY1TestVectors(mode, tmode, vector.MISTY1GenParams{
+		KeyBits:         128,
+		Count:           p.Count,
+		IncludeExpected: p.IncludeExpected,
+		KatVariant:      p.KatVariant,
+	})
+	if err != nil {
+		return stdVec{}, err
+	}
+
+	out := stdVec{Algorithm: vec.Algorithm, Mode: vec.Mode, TestMode: vec.TestMode} // no KeyBits here
+	for _, r := range vec.Encrypt {
+		out.Enc = append(out.Enc, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	for _, r := range vec.Decrypt {
+		out.Dec = append(out.Dec, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	return out, nil
+}
+
 // gens is assigned in init() so we can safely set aliases without init cycles
 var gens map[string]func(mode, tmode string, p baseParams) (stdVec, error)
 
@@ -240,6 +261,7 @@ func init() {
 		"TDEA":     tdeaGen,
 		"CAMELLIA": camGen,
 		"SEED":     seedGen,
+		"MISTY1":   misty1Gen,
 	}
 	// alias AFTER map exists → no self-reference during initialization
 	gens["3DES"] = gens["TDEA"]
