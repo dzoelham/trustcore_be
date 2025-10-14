@@ -36,6 +36,93 @@ func containsInt(list []int, x int) bool {
 	return false
 }
 
+// minimal struct so different vector types can be normalized and reused
+type ioRow struct {
+	Count      int
+	KeyHex     string
+	IVHex      string
+	Plaintext  string
+	Ciphertext string
+}
+
+// builds the TXT body for both ENCRYPT/DECRYPT sections reusing one code path
+func buildTXT(enc, dec []ioRow, includeExpected bool) string {
+	var b strings.Builder // efficient loop concatenation
+	// ENCRYPT
+	b.WriteString("[ENCRYPT]\n\n")
+	for _, r := range enc {
+		b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
+		b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
+		if strings.TrimSpace(r.IVHex) != "" {
+			b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
+		}
+		b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
+		if includeExpected && strings.TrimSpace(r.Ciphertext) != "" {
+			b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// DECRYPT
+	b.WriteString("[DECRYPT]\n\n")
+	for _, r := range dec {
+		b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
+		b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
+		if strings.TrimSpace(r.IVHex) != "" {
+			b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
+		}
+		b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
+		if includeExpected && strings.TrimSpace(r.Plaintext) != "" {
+			b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// persists ENCRYPT & DECRYPT rows in one place (transaction kept at call site)
+func persistVectors(tx *gorm.DB, reqUserID, reqClientID, algorithm, mode, testMode string, enc, dec []ioRow) error {
+	// ENCRYPT
+	for _, e := range enc {
+		in := strings.ToLower(e.Plaintext)
+		out := strings.ToLower(e.Ciphertext)
+		row := models.Vector{
+			UserID:    reqUserID,
+			ClientID:  reqClientID,
+			Algorithm: algorithm,
+			Mode:      mode,
+			TestMode:  testMode,
+			Direction: "ENCRYPT",
+			InputHex:  sp(in),
+			OutputHex: sp(out),
+			Status:    "ready",
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			return err
+		}
+	}
+	// DECRYPT
+	for _, d := range dec {
+		in := strings.ToLower(d.Ciphertext)
+		out := strings.ToLower(d.Plaintext)
+		row := models.Vector{
+			UserID:    reqUserID,
+			ClientID:  reqClientID,
+			Algorithm: algorithm,
+			Mode:      mode,
+			TestMode:  testMode,
+			Direction: "DECRYPT",
+			InputHex:  sp(in),
+			OutputHex: sp(out),
+			Status:    "ready",
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // POST /v1/cryptography/vectors
 func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFunc {
 	type reqT struct {
@@ -127,8 +214,7 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 			return
 		}
 
-		// Unmarshal JSONB fields (works whether JSONB is a struct, map, or raw bytes)
-		// --- after you loaded `cat` (models.Cryptography) ---
+		// Unmarshal JSONB fields
 		var modes []string
 		var testModes []string
 		var keyLens []int
@@ -210,7 +296,7 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 			return
 		}
 
-		// Dispatch
+		// Dispatch (now the branches are tiny and DRY)
 		switch alg {
 		case "AES":
 			vec, err := vector.GenerateAESTestVectors(mode, tmode, vector.AESGenParams{
@@ -224,91 +310,30 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 				return
 			}
 
-			// Persist to `vectors`
+			// Normalize for reuse
+			enc := make([]ioRow, 0, len(vec.Encrypt))
+			for _, r := range vec.Encrypt {
+				enc = append(enc, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+			}
+			dec := make([]ioRow, 0, len(vec.Decrypt))
+			for _, r := range vec.Decrypt {
+				dec = append(dec, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+			}
+
+			// Persist once using shared helper
 			if err := db.Transaction(func(tx *gorm.DB) error {
-				for _, e := range vec.Encrypt {
-					in := strings.ToLower(e.Plaintext)
-					out := strings.ToLower(e.Ciphertext)
-					row := models.Vector{
-						UserID:    req.UserID,
-						ClientID:  req.ClientID,
-						Algorithm: vec.Algorithm,
-						Mode:      vec.Mode,
-						TestMode:  vec.TestMode,
-						Direction: "ENCRYPT",
-						InputHex:  sp(in),
-						OutputHex: sp(out),
-						Status:    "ready",
-					}
-					if err := tx.Create(&row).Error; err != nil {
-						return err
-					}
-				}
-				for _, d := range vec.Decrypt {
-					in := strings.ToLower(d.Ciphertext)
-					out := strings.ToLower(d.Plaintext)
-					row := models.Vector{
-						UserID:    req.UserID,
-						ClientID:  req.ClientID,
-						Algorithm: vec.Algorithm,
-						Mode:      vec.Mode,
-						TestMode:  vec.TestMode,
-						Direction: "DECRYPT",
-						InputHex:  sp(in),
-						OutputHex: sp(out),
-						Status:    "ready",
-					}
-					if err := tx.Create(&row).Error; err != nil {
-						return err
-					}
-				}
-				return nil
+				return persistVectors(tx, req.UserID, req.ClientID, vec.Algorithm, vec.Mode, vec.TestMode, enc, dec)
 			}); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 
 			if strings.ToLower(req.Format) == "txt" {
-				var b strings.Builder
-
-				// ENCRYPT section
-				b.WriteString("[ENCRYPT]\n\n")
-				for _, r := range vec.Encrypt {
-					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
-					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
-					if strings.TrimSpace(r.IVHex) != "" {
-						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
-					}
-					b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
-					// Include expected CIPHERTEXT if requested and present
-					if req.IncludeExpected && strings.TrimSpace(r.Ciphertext) != "" {
-						b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
-					}
-					b.WriteString("\n")
-				}
-
-				// DECRYPT section
-				b.WriteString("[DECRYPT]\n\n")
-				for _, r := range vec.Decrypt {
-					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
-					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
-					if strings.TrimSpace(r.IVHex) != "" {
-						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
-					}
-					b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
-					// Include expected PLAINTEXT if requested and present
-					if req.IncludeExpected && strings.TrimSpace(r.Plaintext) != "" {
-						b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
-					}
-					b.WriteString("\n")
-				}
-
-				txt := b.String()
+				txt := buildTXT(enc, dec, req.IncludeExpected)
 				w.Header().Set("Content-Type", "text/plain")
-				w.Header().Set("Content-Disposition", fmt.Sprintf(
-					"attachment; filename=aes_%s_%s_%d.txt",
-					strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits,
-				))
+				w.Header().Set("Content-Disposition",
+					fmt.Sprintf("attachment; filename=aes_%s_%s_%d.txt",
+						strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits))
 				_, _ = w.Write([]byte(txt))
 				return
 			}
@@ -328,86 +353,28 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 				return
 			}
 
-			// Persist to `vectors`
+			enc := make([]ioRow, 0, len(vec.Encrypt))
+			for _, r := range vec.Encrypt {
+				enc = append(enc, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+			}
+			dec := make([]ioRow, 0, len(vec.Decrypt))
+			for _, r := range vec.Decrypt {
+				dec = append(dec, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+			}
+
 			if err := db.Transaction(func(tx *gorm.DB) error {
-				for _, e := range vec.Encrypt {
-					in := strings.ToLower(e.Plaintext)
-					out := strings.ToLower(e.Ciphertext)
-					row := models.Vector{
-						UserID:    req.UserID,
-						ClientID:  req.ClientID,
-						Algorithm: vec.Algorithm,
-						Mode:      vec.Mode,
-						TestMode:  vec.TestMode,
-						Direction: "ENCRYPT",
-						InputHex:  sp(in),
-						OutputHex: sp(out),
-						Status:    "ready",
-					}
-					if err := tx.Create(&row).Error; err != nil {
-						return err
-					}
-				}
-				for _, d := range vec.Decrypt {
-					in := strings.ToLower(d.Ciphertext)
-					out := strings.ToLower(d.Plaintext)
-					row := models.Vector{
-						UserID:    req.UserID,
-						ClientID:  req.ClientID,
-						Algorithm: vec.Algorithm,
-						Mode:      vec.Mode,
-						TestMode:  vec.TestMode,
-						Direction: "DECRYPT",
-						InputHex:  sp(in),
-						OutputHex: sp(out),
-						Status:    "ready",
-					}
-					if err := tx.Create(&row).Error; err != nil {
-						return err
-					}
-				}
-				return nil
+				return persistVectors(tx, req.UserID, req.ClientID, vec.Algorithm, vec.Mode, vec.TestMode, enc, dec)
 			}); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 
 			if strings.ToLower(req.Format) == "txt" {
-				var b strings.Builder
-				// ENCRYPT
-				b.WriteString("[ENCRYPT]\n\n")
-				for _, r := range vec.Encrypt {
-					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
-					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
-					if strings.TrimSpace(r.IVHex) != "" {
-						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
-					}
-					b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
-					if req.IncludeExpected && strings.TrimSpace(r.Ciphertext) != "" {
-						b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
-					}
-					b.WriteString("\n")
-				}
-				// DECRYPT
-				b.WriteString("[DECRYPT]\n\n")
-				for _, r := range vec.Decrypt {
-					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
-					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
-					if strings.TrimSpace(r.IVHex) != "" {
-						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
-					}
-					b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
-					if req.IncludeExpected && strings.TrimSpace(r.Plaintext) != "" {
-						b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
-					}
-					b.WriteString("\n")
-				}
-				txt := b.String()
+				txt := buildTXT(enc, dec, req.IncludeExpected)
 				w.Header().Set("Content-Type", "text/plain")
-				w.Header().Set("Content-Disposition", fmt.Sprintf(
-					"attachment; filename=tdea_%s_%s_%d.txt",
-					strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits,
-				))
+				w.Header().Set("Content-Disposition",
+					fmt.Sprintf("attachment; filename=tdea_%s_%s_%d.txt",
+						strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits))
 				_, _ = w.Write([]byte(txt))
 				return
 			}
@@ -427,85 +394,28 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 				return
 			}
 
-			// Persist (same pattern as AES/TDEA)
+			enc := make([]ioRow, 0, len(vec.Encrypt))
+			for _, r := range vec.Encrypt {
+				enc = append(enc, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+			}
+			dec := make([]ioRow, 0, len(vec.Decrypt))
+			for _, r := range vec.Decrypt {
+				dec = append(dec, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+			}
+
 			if err := db.Transaction(func(tx *gorm.DB) error {
-				for _, e := range vec.Encrypt {
-					in := strings.ToLower(e.Plaintext)
-					out := strings.ToLower(e.Ciphertext)
-					row := models.Vector{
-						UserID:    req.UserID,
-						ClientID:  req.ClientID,
-						Algorithm: vec.Algorithm,
-						Mode:      vec.Mode,
-						TestMode:  vec.TestMode,
-						Direction: "ENCRYPT",
-						InputHex:  sp(in),
-						OutputHex: sp(out),
-						Status:    "ready",
-					}
-					if err := tx.Create(&row).Error; err != nil {
-						return err
-					}
-				}
-				for _, d := range vec.Decrypt {
-					in := strings.ToLower(d.Ciphertext)
-					out := strings.ToLower(d.Plaintext)
-					row := models.Vector{
-						UserID:    req.UserID,
-						ClientID:  req.ClientID,
-						Algorithm: vec.Algorithm,
-						Mode:      vec.Mode,
-						TestMode:  vec.TestMode,
-						Direction: "DECRYPT",
-						InputHex:  sp(in),
-						OutputHex: sp(out),
-						Status:    "ready",
-					}
-					if err := tx.Create(&row).Error; err != nil {
-						return err
-					}
-				}
-				return nil
+				return persistVectors(tx, req.UserID, req.ClientID, vec.Algorithm, vec.Mode, vec.TestMode, enc, dec)
 			}); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 
 			if strings.ToLower(req.Format) == "txt" {
-				// TXT honoring include_expected (like your AES/TDEA branches)
-				var b strings.Builder
-				b.WriteString("[ENCRYPT]\n\n")
-				for _, r := range vec.Encrypt {
-					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
-					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
-					if strings.TrimSpace(r.IVHex) != "" {
-						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
-					}
-					b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
-					if req.IncludeExpected && strings.TrimSpace(r.Ciphertext) != "" {
-						b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
-					}
-					b.WriteString("\n")
-				}
-				b.WriteString("[DECRYPT]\n\n")
-				for _, r := range vec.Decrypt {
-					b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
-					b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
-					if strings.TrimSpace(r.IVHex) != "" {
-						b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
-					}
-					b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
-					if req.IncludeExpected && strings.TrimSpace(r.Plaintext) != "" {
-						b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
-					}
-					b.WriteString("\n")
-				}
-				txt := b.String()
+				txt := buildTXT(enc, dec, req.IncludeExpected)
 				w.Header().Set("Content-Type", "text/plain")
-				w.Header().Set("Content-Disposition", fmt.Sprintf(
-					"attachment; filename=camellia_%s_%s_%d.txt",
-					strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits,
-				))
+				w.Header().Set("Content-Disposition",
+					fmt.Sprintf("attachment; filename=camellia_%s_%s_%d.txt",
+						strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits))
 				_, _ = w.Write([]byte(txt))
 				return
 			}
