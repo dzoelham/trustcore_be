@@ -4,141 +4,307 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
-
-	"trustcore/internal/models"
-	"trustcore/internal/services/vector"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+
+	"trustcore/internal/models"
+	"trustcore/internal/services/vector"
 )
 
-func sp(s string) *string { return &s }
+type reqT struct {
+	Algorithm       string `json:"algorithm"`
+	Mode            string `json:"mode"`
+	TestMode        string `json:"test_mode"`
+	InputMode       string `json:"input_mode"` // KAT variant (GFSBOX/KEYSBOX/VARKEY/VARTXT)
+	KeyBits         int    `json:"key_bits"`
+	Count           int    `json:"count"`
+	IncludeExpected bool   `json:"include_expected"`
+	Format          string `json:"format"` // "txt" => download; otherwise JSON
+	UserID          string `json:"user_id"`
+	ClientID        string `json:"client_id"`
+}
 
-func containsFold(ss []string, v string) bool {
-	v = strings.ToUpper(strings.TrimSpace(v))
-	for _, s := range ss {
-		if strings.ToUpper(strings.TrimSpace(s)) == v {
+// unified row for TXT + DB
+type row struct {
+	Count      int    `json:"count"`
+	KeyHex     string `json:"key"`
+	IVHex      string `json:"iv"`
+	Plaintext  string `json:"plaintext"`
+	Ciphertext string `json:"ciphertext"`
+}
+
+type stdVec struct {
+	Algorithm string
+	Mode      string
+	TestMode  string
+	Enc       []row
+	Dec       []row
+}
+
+// --- tiny utilities ---
+
+func up(s string) string  { return strings.ToUpper(strings.TrimSpace(s)) }
+func low(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+func strptr(s string) *string {
+	v := s
+	return &v
+}
+func hasFold(list []string, v string) bool {
+	v = up(v)
+	for _, s := range list {
+		if up(s) == v {
 			return true
 		}
 	}
 	return false
 }
-
-func containsInt(list []int, x int) bool {
-	for _, v := range list {
-		if v == x {
-			return true
-		}
-	}
-	return false
+func hasInt(list []int, x int) bool {
+	return slices.Contains(list, x)
 }
 
-// minimal struct so different vector types can be normalized and reused
-type ioRow struct {
-	Count      int
-	KeyHex     string
-	IVHex      string
-	Plaintext  string
-	Ciphertext string
-}
-
-// builds the TXT body for both ENCRYPT/DECRYPT sections reusing one code path
-func buildTXT(enc, dec []ioRow, includeExpected bool) string {
-	var b strings.Builder // efficient loop concatenation
-	// ENCRYPT
+// TXT writer (ENCRYPT/DECRYPT) using strings.Builder (idiomatic & efficient)
+func buildTXT(enc, dec []row, includeExpected bool) string {
+	var b strings.Builder
 	b.WriteString("[ENCRYPT]\n\n")
 	for _, r := range enc {
 		b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
-		b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
+		b.WriteString("KEY = " + low(r.KeyHex) + "\n")
 		if strings.TrimSpace(r.IVHex) != "" {
-			b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
+			b.WriteString("IV = " + low(r.IVHex) + "\n")
 		}
-		b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
-		if includeExpected && strings.TrimSpace(r.Ciphertext) != "" {
-			b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
+		b.WriteString("PLAINTEXT = " + low(r.Plaintext) + "\n")
+		if includeExpected && r.Ciphertext != "" {
+			b.WriteString("CIPHERTEXT = " + low(r.Ciphertext) + "\n")
 		}
 		b.WriteString("\n")
 	}
-
-	// DECRYPT
 	b.WriteString("[DECRYPT]\n\n")
 	for _, r := range dec {
 		b.WriteString(fmt.Sprintf("COUNT = %d\n", r.Count))
-		b.WriteString("KEY = " + strings.ToLower(r.KeyHex) + "\n")
+		b.WriteString("KEY = " + low(r.KeyHex) + "\n")
 		if strings.TrimSpace(r.IVHex) != "" {
-			b.WriteString("IV = " + strings.ToLower(r.IVHex) + "\n")
+			b.WriteString("IV = " + low(r.IVHex) + "\n")
 		}
-		b.WriteString("CIPHERTEXT = " + strings.ToLower(r.Ciphertext) + "\n")
-		if includeExpected && strings.TrimSpace(r.Plaintext) != "" {
-			b.WriteString("PLAINTEXT = " + strings.ToLower(r.Plaintext) + "\n")
+		b.WriteString("CIPHERTEXT = " + low(r.Ciphertext) + "\n")
+		if includeExpected && r.Plaintext != "" {
+			b.WriteString("PLAINTEXT = " + low(r.Plaintext) + "\n")
 		}
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-// persists ENCRYPT & DECRYPT rows in one place (transaction kept at call site)
-func persistVectors(tx *gorm.DB, reqUserID, reqClientID, algorithm, mode, testMode string, enc, dec []ioRow) error {
-	// ENCRYPT
-	for _, e := range enc {
-		in := strings.ToLower(e.Plaintext)
-		out := strings.ToLower(e.Ciphertext)
-		row := models.Vector{
-			UserID:    reqUserID,
-			ClientID:  reqClientID,
-			Algorithm: algorithm,
-			Mode:      mode,
-			TestMode:  testMode,
+// persist both directions in batches
+func persistVectors(tx *gorm.DB, req reqT, v stdVec) error {
+	enc := make([]models.Vector, 0, len(v.Enc))
+	for _, e := range v.Enc {
+		enc = append(enc, models.Vector{
+			UserID:    req.UserID,
+			ClientID:  req.ClientID,
+			Algorithm: v.Algorithm,
+			Mode:      v.Mode,
+			TestMode:  v.TestMode,
 			Direction: "ENCRYPT",
-			InputHex:  sp(in),
-			OutputHex: sp(out),
+			InputHex:  strptr(low(e.Plaintext)),
+			OutputHex: strptr(low(e.Ciphertext)),
 			Status:    "ready",
-		}
-		if err := tx.Create(&row).Error; err != nil {
+		})
+	}
+	dec := make([]models.Vector, 0, len(v.Dec))
+	for _, d := range v.Dec {
+		dec = append(dec, models.Vector{
+			UserID:    req.UserID,
+			ClientID:  req.ClientID,
+			Algorithm: v.Algorithm,
+			Mode:      v.Mode,
+			TestMode:  v.TestMode,
+			Direction: "DECRYPT",
+			InputHex:  strptr(low(d.Ciphertext)),
+			OutputHex: strptr(low(d.Plaintext)),
+			Status:    "ready",
+		})
+	}
+	if len(enc) > 0 {
+		if err := tx.Create(&enc).Error; err != nil { // GORM batch insert
 			return err
 		}
 	}
-	// DECRYPT
-	for _, d := range dec {
-		in := strings.ToLower(d.Ciphertext)
-		out := strings.ToLower(d.Plaintext)
-		row := models.Vector{
-			UserID:    reqUserID,
-			ClientID:  reqClientID,
-			Algorithm: algorithm,
-			Mode:      mode,
-			TestMode:  testMode,
-			Direction: "DECRYPT",
-			InputHex:  sp(in),
-			OutputHex: sp(out),
-			Status:    "ready",
-		}
-		if err := tx.Create(&row).Error; err != nil {
+	if len(dec) > 0 {
+		if err := tx.Create(&dec).Error; err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// POST /v1/cryptography/vectors
-func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFunc {
-	type reqT struct {
-		Algorithm string `json:"algorithm"`
-		Mode      string `json:"mode"`
-		TestMode  string `json:"test_mode"`
+// --- generator adapters → stdVec ---
 
-		// When AES + KAT, this selects the KAT "input mode"/subtype: gfsbox | keysbox | varkey | vartxt
-		InputMode       string `json:"input_mode"`
-		KeyBits         int    `json:"key_bits"`
-		Count           int    `json:"count"`
-		IncludeExpected bool   `json:"include_expected"`
-		Format          string `json:"format"`
-		UserID          string `json:"user_id"`
-		ClientID        string `json:"client_id"`
+type baseParams struct {
+	KeyBits         int
+	Count           int
+	IncludeExpected bool
+	KatVariant      string
+}
+
+func aesGen(mode, tmode string, p baseParams) (stdVec, error) {
+	vec, err := vector.GenerateAESTestVectors(mode, tmode, vector.AESGenParams{
+		KeyBits:         p.KeyBits,
+		Count:           p.Count,
+		IncludeExpected: p.IncludeExpected,
+		KatVariant:      p.KatVariant,
+	})
+	if err != nil {
+		return stdVec{}, err
 	}
+	out := stdVec{Algorithm: vec.Algorithm, Mode: vec.Mode, TestMode: vec.TestMode}
+	for _, r := range vec.Encrypt {
+		out.Enc = append(out.Enc, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	for _, r := range vec.Decrypt {
+		out.Dec = append(out.Dec, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	return out, nil
+}
+
+func tdeaGen(mode, tmode string, p baseParams) (stdVec, error) {
+	vec, err := vector.GenerateTDEATestVectors(mode, tmode, vector.TDEAGenParams{
+		KeyBits:         p.KeyBits,
+		Count:           p.Count,
+		IncludeExpected: p.IncludeExpected,
+		KatVariant:      p.KatVariant,
+	})
+	if err != nil {
+		return stdVec{}, err
+	}
+	out := stdVec{Algorithm: vec.Algorithm, Mode: vec.Mode, TestMode: vec.TestMode}
+	for _, r := range vec.Encrypt {
+		out.Enc = append(out.Enc, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	for _, r := range vec.Decrypt {
+		out.Dec = append(out.Dec, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	return out, nil
+}
+
+func camGen(mode, tmode string, p baseParams) (stdVec, error) {
+	vec, err := vector.GenerateCamelliaTestVectors(mode, tmode, vector.CamGenParams{
+		KeyBits:         p.KeyBits,
+		Count:           p.Count,
+		IncludeExpected: p.IncludeExpected,
+		KatVariant:      p.KatVariant,
+	})
+	if err != nil {
+		return stdVec{}, err
+	}
+	out := stdVec{Algorithm: vec.Algorithm, Mode: vec.Mode, TestMode: vec.TestMode}
+	for _, r := range vec.Encrypt {
+		out.Enc = append(out.Enc, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	for _, r := range vec.Decrypt {
+		out.Dec = append(out.Dec, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	return out, nil
+}
+
+// gens is assigned in init() so we can safely set aliases without init cycles
+var gens map[string]func(mode, tmode string, p baseParams) (stdVec, error)
+
+func init() {
+	gens = map[string]func(mode, tmode string, p baseParams) (stdVec, error){
+		"AES":      aesGen,
+		"TDEA":     tdeaGen,
+		"CAMELLIA": camGen,
+	}
+	// alias AFTER map exists → no self-reference during initialization
+	gens["3DES"] = gens["TDEA"]
+}
+
+// --- catalogue & request validation ---
+
+func validateUserAndClient(db *gorm.DB, userID, clientID string) error {
+	if err := uuid.Validate(userID); err != nil {
+		return fmt.Errorf("user_id must be a valid UUID")
+	}
+	if err := uuid.Validate(clientID); err != nil {
+		return fmt.Errorf("client_id must be a valid UUID")
+	}
+	var exists bool
+	if err := db.Model(&models.Client{}).
+		Select("count(*) > 0").Where("id = ?", clientID).Find(&exists).Error; err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("client_id does not exist")
+	}
+	if err := db.Model(&models.User{}).
+		Select("count(*) > 0").Where("id = ?", userID).Find(&exists).Error; err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("user_id does not exist")
+	}
+	return nil
+}
+
+func validateFromCatalogue(db *gorm.DB, req reqT) (allowedModes []string, allowedTests []string, allowedKeyBits []int, category string, err error) {
+	var cat models.Cryptography
+	if err = db.Where("upper(algorithm) = ?", up(req.Algorithm)).First(&cat).Error; err != nil {
+		return nil, nil, nil, "", fmt.Errorf("algorithm not found in catalogue")
+	}
+
+	// jsonb → slices (handle json.Marshal’s two return values)
+	if bm, e := json.Marshal(cat.Modes); e == nil && bm != nil {
+		_ = json.Unmarshal(bm, &allowedModes)
+	}
+	if bt, e := json.Marshal(cat.TestModes); e == nil && bt != nil {
+		_ = json.Unmarshal(bt, &allowedTests)
+	}
+	if bk, e := json.Marshal(cat.KeyLengths); e == nil && bk != nil {
+		_ = json.Unmarshal(bk, &allowedKeyBits)
+	}
+
+	category = up(strings.TrimSpace(cat.Category))
+
+	switch category {
+	case "HASH", "MESSAGE AUTHENTICATION", "RANDOM NUMBER GENERATOR", "ASYMMETRIC TECHNIQUE", "KEY MANAGEMENT", "POST QUANTUM CRYPTOGRAPHY":
+		// Mode-less families
+		if strings.TrimSpace(req.Mode) != "" {
+			return nil, nil, nil, category, fmt.Errorf("%s does not use modes; omit 'mode'", cat.Algorithm)
+		}
+	default:
+		if len(allowedModes) > 0 && !hasFold(allowedModes, req.Mode) {
+			sort.Strings(allowedModes)
+			return nil, nil, nil, category, fmt.Errorf("invalid mode for %s. allowed: %v", cat.Algorithm, allowedModes)
+		}
+	}
+
+	if len(allowedTests) > 0 && !hasFold(allowedTests, req.TestMode) {
+		return nil, nil, nil, category, fmt.Errorf("invalid test_mode for %s. allowed: %v", cat.Algorithm, allowedTests)
+	}
+
+	// sensible defaults if key lengths empty
+	if len(allowedKeyBits) == 0 {
+		switch up(req.Algorithm) {
+		case "AES":
+			allowedKeyBits = []int{128, 192, 256}
+		case "TDEA", "3DES":
+			allowedKeyBits = []int{112, 168}
+		}
+	}
+	if len(allowedKeyBits) > 0 && !hasInt(allowedKeyBits, req.KeyBits) {
+		return nil, nil, nil, category, fmt.Errorf("invalid key_bits for %s. allowed: %v", cat.Algorithm, allowedKeyBits)
+	}
+	return allowedModes, allowedTests, allowedKeyBits, category, nil
+}
+
+// --- HTTP handler ---
+
+func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req reqT
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -146,286 +312,63 @@ func GenerateVectorsByParams(db *gorm.DB, lg *zap.SugaredLogger) http.HandlerFun
 			return
 		}
 
-		// UUID validations
-		if err := uuid.Validate(req.UserID); err != nil {
-			http.Error(w, "user_id must be a valid UUID", http.StatusBadRequest)
-			return
-		}
-		if err := uuid.Validate(req.ClientID); err != nil {
-			http.Error(w, "client_id must be a valid UUID", http.StatusBadRequest)
+		if err := validateUserAndClient(db, req.UserID, req.ClientID); err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
 
-		alg := strings.ToUpper(strings.TrimSpace(req.Algorithm))
-		mode := strings.ToUpper(strings.TrimSpace(req.Mode))
-		tmode := strings.ToUpper(strings.TrimSpace(req.TestMode))
-
-		// Extra validation: if AES + KAT, ensure input_mode is present and valid
-		if strings.EqualFold(alg, "AES") && strings.EqualFold(tmode, "KAT") {
-			allowed := []string{"GFSBOX", "KEYSBOX", "VARKEY", "VARTXT"}
-			if strings.TrimSpace(strings.ToUpper(req.InputMode)) == "" {
-				http.Error(w, fmt.Sprintf("for AES KAT, input_mode must be one of %v", allowed), http.StatusBadRequest)
-				return
-			}
-			valid := false
-			for _, a := range allowed {
-				if strings.EqualFold(req.InputMode, a) {
-					valid = true
-					break
-				}
-			}
-			if !valid {
-				http.Error(w, fmt.Sprintf("for AES KAT, input_mode must be one of %v", allowed), http.StatusBadRequest)
-				return
-			}
-		}
-
-		if alg == "" || tmode == "" {
-			http.Error(w, "algorithm and test_mode are required", http.StatusBadRequest)
+		if _, _, _, _, err := validateFromCatalogue(db, req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Client & User existence
-		var exists bool
-		if err := db.Model(&models.Client{}).
-			Select("count(*) > 0").Where("id = ?", req.ClientID).Find(&exists).Error; err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if !exists {
-			http.Error(w, "client_id does not exist", http.StatusUnprocessableEntity)
-			return
-		}
-
-		if err := db.Model(&models.User{}).
-			Select("count(*) > 0").Where("id = ?", req.UserID).Find(&exists).Error; err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if !exists {
-			http.Error(w, "user_id does not exist", http.StatusUnprocessableEntity)
-			return
-		}
-
-		// Lookup cryptography catalogue and validate combination
-		var cat models.Cryptography
-		if err := db.Where("upper(algorithm) = ?", alg).First(&cat).Error; err != nil {
-			http.Error(w, "algorithm not found in catalogue", http.StatusBadRequest)
-			return
-		}
-
-		// Unmarshal JSONB fields
-		var modes []string
-		var testModes []string
-		var keyLens []int
-
-		if b, err := json.Marshal(cat.Modes); err == nil {
-			_ = json.Unmarshal(b, &modes)
-		}
-		if b, err := json.Marshal(cat.TestModes); err == nil {
-			_ = json.Unmarshal(b, &testModes)
-		}
-		if b, err := json.Marshal(cat.KeyLengths); err == nil {
-			_ = json.Unmarshal(b, &keyLens)
-		}
-
-		// Helper: for all algorithm modes (fallback if catalogue is missing/empty)
-		aesModes := []string{"ECB", "CBC", "CFB", "OFB", "CTR", "GCM"}
-		tdeaModes := []string{"ECB", "CBC", "CFB", "OFB", "CTR"}
-		camModes := []string{"ECB", "CBC", "CFB", "OFB", "CTR", "GCM"}
-
-		// Decide how to validate `mode`
-		category := strings.ToUpper(strings.TrimSpace(cat.Category))
-		switch category {
-		case "HASH", "MESSAGE AUTHENTICATION", "RANDOM NUMBER GENERATOR", "ASYMMETRIC TECHNIQUE", "KEY MANAGEMENT", "POST QUANTUM CRYPTOGRAPHY":
-			// Mode-less families
-			if strings.TrimSpace(mode) != "" {
-				http.Error(w, fmt.Sprintf("%s does not use modes; omit 'mode'", cat.Algorithm), http.StatusBadRequest)
-				return
-			}
-		default:
-			// Things that may use modes (block ciphers; some stream ciphers)
-			if len(modes) > 0 {
-				if !containsFold(modes, mode) {
-					sort.Strings(modes)
-					http.Error(w, fmt.Sprintf("invalid mode for %s. allowed: %v", cat.Algorithm, modes), http.StatusBadRequest)
-					return
-				}
-			} else {
-				// Catalogue has empty/NULL modes; apply sensible fallback
-				if strings.EqualFold(alg, "AES") {
-					if !containsFold(aesModes, mode) {
-						http.Error(w, fmt.Sprintf("invalid mode for AES. allowed: %v", aesModes), http.StatusBadRequest)
-						return
-					}
-				} else if strings.EqualFold(alg, "TDEA") || strings.EqualFold(alg, "3DES") {
-					if !containsFold(tdeaModes, mode) {
-						http.Error(w, fmt.Sprintf("invalid mode for TDEA. allowed: %v", tdeaModes), http.StatusBadRequest)
-						return
-					}
-				} else if strings.EqualFold(alg, "CAMELLIA") {
-					if !containsFold(camModes, mode) {
-						http.Error(w, fmt.Sprintf("invalid mode for Camellia. allowed: %v", camModes), http.StatusBadRequest)
-						return
-					}
-				} else if strings.TrimSpace(mode) != "" && strings.EqualFold(category, "STREAM CIPHER") {
-					// Stream ciphers typically have no modes -> require omit
-					http.Error(w, fmt.Sprintf("%s is a stream cipher and does not use modes; omit 'mode'", cat.Algorithm), http.StatusBadRequest)
-					return
-				}
-				// else: accept as-is (no strict mode validation available)
-			}
-		}
-
-		// Validate test_mode and key_bits if catalogue provides them
-		if len(testModes) > 0 && !containsFold(testModes, tmode) {
-			http.Error(w, fmt.Sprintf("invalid test_mode for %s. allowed: %v", cat.Algorithm, testModes), http.StatusBadRequest)
-			return
-		}
-		// key_bits validation fallback if table empty
-		if len(keyLens) == 0 {
-			if strings.EqualFold(alg, "AES") {
-				keyLens = []int{128, 192, 256}
-			}
-			if strings.EqualFold(alg, "TDEA") || strings.EqualFold(alg, "3DES") {
-				keyLens = []int{112, 168}
-			}
-		}
-		if len(keyLens) > 0 && !containsInt(keyLens, req.KeyBits) {
-			http.Error(w, fmt.Sprintf("invalid key_bits for %s. allowed: %v", cat.Algorithm, keyLens), http.StatusBadRequest)
-			return
-		}
-
-		// Dispatch (now the branches are tiny and DRY)
-		switch alg {
-		case "AES":
-			vec, err := vector.GenerateAESTestVectors(mode, tmode, vector.AESGenParams{
-				KeyBits:         req.KeyBits,
-				Count:           req.Count,
-				IncludeExpected: req.IncludeExpected,
-				KatVariant:      req.InputMode,
-			})
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-
-			// Normalize for reuse
-			enc := make([]ioRow, 0, len(vec.Encrypt))
-			for _, r := range vec.Encrypt {
-				enc = append(enc, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
-			}
-			dec := make([]ioRow, 0, len(vec.Decrypt))
-			for _, r := range vec.Decrypt {
-				dec = append(dec, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
-			}
-
-			// Persist once using shared helper
-			if err := db.Transaction(func(tx *gorm.DB) error {
-				return persistVectors(tx, req.UserID, req.ClientID, vec.Algorithm, vec.Mode, vec.TestMode, enc, dec)
-			}); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			if strings.ToLower(req.Format) == "txt" {
-				txt := buildTXT(enc, dec, req.IncludeExpected)
-				w.Header().Set("Content-Type", "text/plain")
-				w.Header().Set("Content-Disposition",
-					fmt.Sprintf("attachment; filename=aes_%s_%s_%d.txt",
-						strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits))
-				_, _ = w.Write([]byte(txt))
-				return
-			}
-
-			respondJSON(w, vec)
-			return
-
-		case "TDEA", "3DES":
-			vec, err := vector.GenerateTDEATestVectors(mode, tmode, vector.TDEAGenParams{
-				KeyBits:         req.KeyBits,
-				Count:           req.Count,
-				IncludeExpected: req.IncludeExpected,
-				KatVariant:      req.InputMode,
-			})
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-
-			enc := make([]ioRow, 0, len(vec.Encrypt))
-			for _, r := range vec.Encrypt {
-				enc = append(enc, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
-			}
-			dec := make([]ioRow, 0, len(vec.Decrypt))
-			for _, r := range vec.Decrypt {
-				dec = append(dec, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
-			}
-
-			if err := db.Transaction(func(tx *gorm.DB) error {
-				return persistVectors(tx, req.UserID, req.ClientID, vec.Algorithm, vec.Mode, vec.TestMode, enc, dec)
-			}); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			if strings.ToLower(req.Format) == "txt" {
-				txt := buildTXT(enc, dec, req.IncludeExpected)
-				w.Header().Set("Content-Type", "text/plain")
-				w.Header().Set("Content-Disposition",
-					fmt.Sprintf("attachment; filename=tdea_%s_%s_%d.txt",
-						strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits))
-				_, _ = w.Write([]byte(txt))
-				return
-			}
-
-			respondJSON(w, vec)
-			return
-
-		case "CAMELLIA":
-			vec, err := vector.GenerateCamelliaTestVectors(mode, tmode, vector.CamGenParams{
-				KeyBits:         req.KeyBits,
-				Count:           req.Count,
-				IncludeExpected: req.IncludeExpected,
-				KatVariant:      req.InputMode,
-			})
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-
-			enc := make([]ioRow, 0, len(vec.Encrypt))
-			for _, r := range vec.Encrypt {
-				enc = append(enc, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
-			}
-			dec := make([]ioRow, 0, len(vec.Decrypt))
-			for _, r := range vec.Decrypt {
-				dec = append(dec, ioRow{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
-			}
-
-			if err := db.Transaction(func(tx *gorm.DB) error {
-				return persistVectors(tx, req.UserID, req.ClientID, vec.Algorithm, vec.Mode, vec.TestMode, enc, dec)
-			}); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			if strings.ToLower(req.Format) == "txt" {
-				txt := buildTXT(enc, dec, req.IncludeExpected)
-				w.Header().Set("Content-Type", "text/plain")
-				w.Header().Set("Content-Disposition",
-					fmt.Sprintf("attachment; filename=camellia_%s_%s_%d.txt",
-						strings.ToLower(vec.Mode), strings.ToLower(vec.TestMode), req.KeyBits))
-				_, _ = w.Write([]byte(txt))
-				return
-			}
-
-			respondJSON(w, vec)
-			return
-
-		default:
+		gen, ok := gens[up(req.Algorithm)]
+		if !ok {
 			http.Error(w, "algorithm/mode not implemented yet", http.StatusNotImplemented)
 			return
 		}
+
+		v, err := gen(up(req.Mode), up(req.TestMode), baseParams{
+			KeyBits:         req.KeyBits,
+			Count:           req.Count,
+			IncludeExpected: req.IncludeExpected,
+			KatVariant:      up(req.InputMode),
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			return persistVectors(tx, req, v)
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if strings.EqualFold(req.Format, "txt") {
+			txt := buildTXT(v.Enc, v.Dec, req.IncludeExpected)
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("Content-Disposition",
+				fmt.Sprintf("attachment; filename=%s_%s_%s_%d.txt",
+					low(v.Algorithm), low(v.Mode), low(v.TestMode), req.KeyBits))
+			_, _ = w.Write([]byte(txt))
+			return
+		}
+
+		type resp struct {
+			Algorithm string `json:"algorithm"`
+			Mode      string `json:"mode"`
+			TestMode  string `json:"test_mode"`
+			Encrypt   []row  `json:"encrypt"`
+			Decrypt   []row  `json:"decrypt"`
+		}
+		respondJSON(w, resp{
+			Algorithm: v.Algorithm,
+			Mode:      v.Mode,
+			TestMode:  v.TestMode,
+			Encrypt:   v.Enc,
+			Decrypt:   v.Dec,
+		})
 	}
 }
