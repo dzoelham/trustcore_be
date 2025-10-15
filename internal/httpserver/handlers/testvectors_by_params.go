@@ -252,6 +252,48 @@ func misty1Gen(mode, tmode string, p baseParams) (stdVec, error) {
 	return out, nil
 }
 
+func cast128Gen(mode, tmode string, p baseParams) (stdVec, error) {
+	vec, err := vector.GenerateCAST128TestVectors(mode, tmode, vector.CAST128GenParams{
+		KeyBits:         p.KeyBits, // enforce 40..128 (multiple of 8)
+		Count:           p.Count,
+		IncludeExpected: p.IncludeExpected,
+		KatVariant:      p.KatVariant,
+	})
+	if err != nil {
+		return stdVec{}, err
+	}
+
+	out := stdVec{Algorithm: vec.Algorithm, Mode: vec.Mode, TestMode: vec.TestMode}
+	for _, r := range vec.Encrypt {
+		out.Enc = append(out.Enc, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	for _, r := range vec.Decrypt {
+		out.Dec = append(out.Dec, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	return out, nil
+}
+
+func hightGen(mode, tmode string, p baseParams) (stdVec, error) {
+	vec, err := vector.GenerateHIGHTTestVectors(mode, tmode, vector.HIGHTGenParams{
+		KeyBits:         128, // HIGHT is fixed to 128-bit keys
+		Count:           p.Count,
+		IncludeExpected: p.IncludeExpected,
+		KatVariant:      p.KatVariant,
+	})
+	if err != nil {
+		return stdVec{}, err
+	}
+
+	out := stdVec{Algorithm: vec.Algorithm, Mode: vec.Mode, TestMode: vec.TestMode}
+	for _, r := range vec.Encrypt {
+		out.Enc = append(out.Enc, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	for _, r := range vec.Decrypt {
+		out.Dec = append(out.Dec, row{r.Count, r.KeyHex, r.IVHex, r.Plaintext, r.Ciphertext})
+	}
+	return out, nil
+}
+
 // gens is assigned in init() so we can safely set aliases without init cycles
 var gens map[string]func(mode, tmode string, p baseParams) (stdVec, error)
 
@@ -262,6 +304,8 @@ func init() {
 		"CAMELLIA": camGen,
 		"SEED":     seedGen,
 		"MISTY1":   misty1Gen,
+		"CAST-128": cast128Gen,
+		"HIGHT":    hightGen,
 	}
 	// alias AFTER map exists → no self-reference during initialization
 	gens["3DES"] = gens["TDEA"]
