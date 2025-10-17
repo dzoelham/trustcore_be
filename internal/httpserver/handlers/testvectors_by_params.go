@@ -315,6 +315,47 @@ func mugiGen(mode, tmode string, p baseParams) (stdVec, error) {
 	return out, nil
 }
 
+// Per-algo wrapper: SNOW 2.0
+// Per-algo wrapper: SNOW 2.0
+func snow2Gen(mode, tmode string, p baseParams) (stdVec, error) {
+	// SNOW 2.0 supports 128- or 256-bit keys; IV is 128-bit.
+	keyBits := p.KeyBits
+	if keyBits == 0 {
+		keyBits = 128
+	}
+
+	vec, err := vector.GenerateSNOW2TestVectors(tmode, vector.SNOW2GenParams{
+		Count:           p.Count,
+		IncludeExpected: p.IncludeExpected,
+		KeyBits:         keyBits,
+	})
+	if err != nil {
+		return stdVec{}, err
+	}
+
+	// vec.TestMode is a custom type; cast to string
+	out := stdVec{Algorithm: vec.Algorithm, Mode: vec.Mode, TestMode: string(vec.TestMode)}
+	for _, r := range vec.Encrypt {
+		out.Enc = append(out.Enc, row{
+			Count:      r.Count,
+			KeyHex:     r.KeyHex,
+			IVHex:      r.IVHex,
+			Plaintext:  r.Plaintext,
+			Ciphertext: r.Ciphertext,
+		})
+	}
+	for _, r := range vec.Decrypt {
+		out.Dec = append(out.Dec, row{
+			Count:      r.Count,
+			KeyHex:     r.KeyHex,
+			IVHex:      r.IVHex,
+			Plaintext:  r.Plaintext,
+			Ciphertext: r.Ciphertext,
+		})
+	}
+	return out, nil
+}
+
 // gens is assigned in init() so we can safely set aliases without init cycles
 var gens map[string]func(mode, tmode string, p baseParams) (stdVec, error)
 
@@ -328,6 +369,7 @@ func init() {
 		"CAST-128": cast128Gen,
 		"HIGHT":    hightGen,
 		"MUGI":     mugiGen,
+		"SNOW2":    snow2Gen,
 	}
 	// alias AFTER map exists → no self-reference during initialization
 	gens["3DES"] = gens["TDEA"]

@@ -88,7 +88,7 @@ ON CONFLICT (algorithm) DO UPDATE SET
   standard_ref=EXCLUDED.standard_ref,
   notes=EXCLUDED.notes;
 INSERT INTO cryptography(algorithm, category, modes, test_modes, key_lengths, block_size_bits, iv_size_bits, standard_ref, notes)
-VALUES ('SNOW 2.0','Stream cipher','[]'::jsonb,'["KAT", "MMT"]'::jsonb,'[128]'::jsonb,NULL,NULL,'ISO/IEC 18033-4','')
+VALUES ('SNOW2','Stream cipher','[]'::jsonb,'["KAT", "MMT"]'::jsonb,'[128]'::jsonb,NULL,NULL,'ISO/IEC 18033-4','')
 ON CONFLICT (algorithm) DO UPDATE SET 
   category=EXCLUDED.category,
   modes=EXCLUDED.modes,
