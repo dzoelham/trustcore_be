@@ -141,7 +141,7 @@ func main() {
 
 	port := os.Getenv("HTTP_PORT")
 	if port == "" {
-		port = "8080"
+		port = "8083"
 	}
 
 	lg.Infow("Server starting",
